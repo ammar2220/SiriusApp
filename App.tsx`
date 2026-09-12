@@ -1,0 +1,201 @@
+import React, { useState } from 'react';
+import { SafeAreaView, StatusBar, StyleSheet, View, TouchableOpacity, Text } from 'react-native';
+import HardwareTestScreen from './src/screens/HardwareTestScreen';
+import ProvisioningScreen from './src/screens/ProvisioningScreen';
+import DashboardScreen from './src/screens/home/DashboardScreen';
+import HomeView from './src/screens/home/HomeView';
+import RoomView from './src/screens/home/RoomView';
+import DeviceControlScreen from './src/screens/DeviceControlScreen';
+import SignInScreen from './src/screens/auth/SignInScreen';
+import SignUpScreen from './src/screens/auth/SignUpScreen';
+import AutomationsScreen from './src/screens/AutomationsScreen';
+import ProfileScreen from './src/screens/ProfileScreen';
+
+const App = () => {
+  const [screen, setScreen] = useState<'auth-signin' | 'auth-signup' | 'dashboard' | 'home' | 'room' | 'device' | 'test' | 'provision' | 'automations' | 'profile'>('auth-signin');
+  const [selectedHomeId, setSelectedHomeId] = useState<string | null>(null);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+
+  const navigateToHome = (homeId: string) => {
+    setSelectedHomeId(homeId);
+    setScreen('home');
+  };
+
+  const navigateToRoom = (roomId: string) => {
+    setSelectedRoomId(roomId);
+    setScreen('room');
+  };
+
+  const navigateToDevice = (deviceId: string) => {
+    setSelectedDeviceId(deviceId);
+    setScreen('device');
+  };
+
+  const handleAuthSuccess = () => {
+    setScreen('dashboard');
+  };
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="#f5f5f5" />
+
+      {screen === 'auth-signin' ? (
+        <SignInScreen
+          onSignIn={handleAuthSuccess}
+          onNavigateToSignUp={() => setScreen('auth-signup')}
+        />
+      ) : screen === 'auth-signup' ? (
+        <SignUpScreen
+          onSignUp={handleAuthSuccess}
+          onNavigateToSignIn={() => setScreen('auth-signin')}
+        />
+      ) : (
+        <>
+          <View style={styles.topNav}>
+            <TouchableOpacity
+              style={[styles.topNavBtn, (screen === 'test') && styles.topNavBtnActive]}
+              onPress={() => setScreen('test')}
+            >
+              <Text style={[styles.topNavText, (screen === 'test') && styles.topNavTextActive]}>Test</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.topNavBtn, (screen === 'provision') && styles.topNavBtnActive]}
+              onPress={() => setScreen('provision')}
+            >
+              <Text style={[styles.topNavText, (screen === 'provision') && styles.topNavTextActive]}>Provision</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.topNavBtn, (screen === 'dashboard' || screen === 'home' || screen === 'room' || screen === 'device' || screen === 'automations' || screen === 'profile') && styles.topNavBtnActive]}
+              onPress={() => setScreen('dashboard')}
+            >
+              <Text style={[styles.topNavText, (screen === 'dashboard' || screen === 'home' || screen === 'room' || screen === 'device' || screen === 'automations' || screen === 'profile') && styles.topNavTextActive]}>Home</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ flex: 1 }}>
+            {screen === 'test' ? (
+              <HardwareTestScreen />
+            ) : screen === 'provision' ? (
+              <ProvisioningScreen />
+            ) : screen === 'dashboard' ? (
+              <DashboardScreen
+                onNavigateToHome={navigateToHome}
+              />
+            ) : screen === 'home' ? (
+              <HomeView
+                homeId={selectedHomeId || ''}
+                onNavigateToRoom={navigateToRoom}
+                onNavigateToDevice={navigateToDevice}
+              />
+            ) : screen === 'room' ? (
+              <RoomView
+                roomId={selectedRoomId || ''}
+                onBack={() => setScreen('home')}
+                onNavigateToDevice={navigateToDevice}
+              />
+            ) : screen === 'device' ? (
+              <DeviceControlScreen
+                deviceId={selectedDeviceId || ''}
+                onBack={() => selectedRoomId ? setScreen('room') : setScreen('home')}
+              />
+            ) : screen === 'automations' ? (
+              <AutomationsScreen />
+            ) : (
+              <ProfileScreen />
+            )}
+          </View>
+
+          <View style={styles.bottomNav}>
+            <TouchableOpacity
+              style={[styles.bottomNavBtn, (screen === 'dashboard' || screen === 'home' || screen === 'room' || screen === 'device') && styles.bottomNavBtnActive]}
+              onPress={() => setScreen('dashboard')}
+            >
+              <Text style={[styles.bottomNavText, (screen === 'dashboard' || screen === 'home' || screen === 'room' || screen === 'device') && styles.bottomNavTextActive]}>🏠</Text>
+              <Text style={[styles.bottomNavLabel, (screen === 'dashboard' || screen === 'home' || screen === 'room' || screen === 'device') && styles.bottomNavLabelActive]}>Home</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.bottomNavBtn, (screen === 'automations') && styles.bottomNavBtnActive]}
+              onPress={() => setScreen('automations')}
+            >
+              <Text style={[styles.bottomNavText, (screen === 'automations') && styles.bottomNavTextActive]}>⚡</Text>
+              <Text style={[styles.bottomNavLabel, (screen === 'automations') && styles.bottomNavLabelActive]}>Auto</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.bottomNavBtn, (screen === 'profile') && styles.bottomNavBtnActive]}
+              onPress={() => setScreen('profile')}
+            >
+              <Text style={[styles.bottomNavText, (screen === 'profile') && styles.bottomNavTextActive]}>👤</Text>
+              <Text style={[styles.bottomNavLabel, (screen === 'profile') && styles.bottomNavLabelActive]}>Profile</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
+    </SafeAreaView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+  },
+  topNav: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#ddd',
+  },
+  topNavBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  topNavBtnActive: {
+    borderBottomWidth: 3,
+    borderBottomColor: '#007AFF',
+  },
+  topNavText: {
+    fontSize: 14,
+    color: '#666',
+  },
+  topNavTextActive: {
+    color: '#007AFF',
+    fontWeight: 'bold',
+  },
+  bottomNav: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#ddd',
+    paddingBottom: 20,
+  },
+  bottomNavBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bottomNavBtnActive: {
+    opacity: 1,
+  },
+  bottomNavText: {
+    fontSize: 20,
+    color: '#666',
+  },
+  bottomNavTextActive: {
+    color: '#007AFF',
+  },
+  bottomNavLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+  },
+  bottomNavLabelActive: {
+    color: '#007AFF',
+    fontWeight: 'bold',
+  },
+});
+
+export default App;
