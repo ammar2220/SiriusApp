@@ -33,16 +33,16 @@ export const DeviceCard = ({ device, onToggle, onPress }: DeviceCardProps) => {
           <TouchableOpacity
             key={channel.id}
             style={styles.channelRow}
-            onPress={() => onToggle(channel.id, channel.powerState === 'on' ? 'off' : 'on')}
+            onPress={() => onToggle(channel.id, channel.state === 'on' ? 'off' : 'on')}
           >
             <Typography variant="body">{channel.name}</Typography>
             <View style={[
               styles.toggle,
-              { backgroundColor: channel.powerState === 'on' ? SiriusTheme.colors.primary : SiriusTheme.colors.disabled }
+              { backgroundColor: channel.state === 'on' ? SiriusTheme.colors.primary : SiriusTheme.colors.disabled }
             ]}>
               <View style={[
                 styles.toggleThumb,
-                { marginLeft: channel.powerState === 'on' ? 16 : 2 }
+                { marginLeft: channel.state === 'on' ? 16 : 2 }
               ]} />
             </View>
           </TouchableOpacity>

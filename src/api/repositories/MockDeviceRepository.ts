@@ -1,5 +1,5 @@
 import { DeviceRepository } from '../deviceRepository';
-import { Home, Room, SiriusDevice } from '../../types/home';
+import { Home, Room, SiriusDevice, SiriusProduct } from '../../types/home';
 import persistentStorage from '../persistence/PersistentStorage';
 
 class MockDeviceRepository implements DeviceRepository {
@@ -29,12 +29,15 @@ class MockDeviceRepository implements DeviceRepository {
   private async save() {
     await persistentStorage.saveState({
       homes: this.homes,
-      devices: Object.values(this.devices),
+      devices: Object.entries(this.devices).map(([id, device]) => ({
+        ...device,
+        id,
+      })),
     });
   }
 
-  async getHomes(): Promise<Home[]> {
-    return this.homes;
+  async getHomes(userId: string): Promise<Home[]> {
+    return this.homes.filter(h => h.userId === userId);
   }
 
   async getHomeStats(homeId: string): Promise<{ totalDevices: number, activeDevices: number }> {
@@ -47,21 +50,22 @@ class MockDeviceRepository implements DeviceRepository {
     for (const room of home.rooms) {
       const devices = Object.values(this.devices).filter(d => d.roomId === room.id);
       total += devices.length;
-      active += devices.filter(d => d.powerState === 'on').length;
+      active += devices.filter(d => d.channels.some(c => c.state === 'on')).length;
     }
 
     return { totalDevices: total, activeDevices: active };
   }
 
-  async getHome(id: string): Promise<Home> {
-    const home = this.homes.find(h => h.id === id);
-    if (!home) throw new Error(`Home ${id} not found`);
+  async getHome(id: string, userId: string): Promise<Home> {
+    const home = this.homes.find(h => h.id === id && h.userId === userId);
+    if (!home) throw new Error(`Home ${id} not found for user ${userId}`);
     return { ...home };
   }
 
-  async addHome(name: string): Promise<Home> {
+  async addHome(userId: string, name: string): Promise<Home> {
     const newHome: Home = {
       id: `home-${this.homes.length + 1}`,
+      userId,
       name,
       rooms: [],
     };
@@ -69,6 +73,34 @@ class MockDeviceRepository implements DeviceRepository {
     await this.save();
     return newHome;
   }
+
+  async renameHome(homeId: string, newName: string): Promise<void> {
+    const home = this.homes.find(h => h.id === homeId);
+    if (!home) throw new Error(`Home ${homeId} not found`);
+    home.name = newName;
+    await this.save();
+  }
+
+  async deleteHome(homeId: string): Promise<void> {
+    const home = this.homes.find(h => h.id === homeId);
+    if (!home) throw new Error(`Home ${homeId} not found`);
+
+    this.homes = this.homes.filter(h => h.id !== homeId);
+
+    const devicesToRemove: string[] = [];
+    for (const [id, device] of Object.entries(this.devices)) {
+      if (device.homeId === homeId) {
+        devicesToRemove.push(id);
+      }
+    }
+
+    devicesToRemove.forEach(id => {
+      delete this.devices[id];
+    });
+
+    await this.save();
+  }
+
 
   async addRoom(homeId: string, name: string, type: string): Promise<Room> {
     const home = this.homes.find(h => h.id === homeId);
@@ -78,11 +110,23 @@ class MockDeviceRepository implements DeviceRepository {
       id: `room-${Math.random().toString(36).substr(2, 9)}`,
       name,
       type,
+      homeId,
       devices: [],
     };
     home.rooms.push(newRoom);
     await this.save();
     return newRoom;
+  }
+
+  async renameRoom(homeId: string, roomId: string, newName: string): Promise<void> {
+    const home = this.homes.find(h => h.id === homeId);
+    if (!home) throw new Error('Home not found');
+
+    const room = home.rooms.find(r => r.id === roomId);
+    if (!room) throw new Error('Room not found in home');
+
+    room.name = newName;
+    await this.save();
   }
 
   async getDevice(id: string): Promise<SiriusDevice> {
@@ -91,12 +135,26 @@ class MockDeviceRepository implements DeviceRepository {
     return { ...device };
   }
 
-  async getDevicesInRoom(roomId: string): Promise<SiriusDevice[]> {
-    return Object.values(this.devices).filter(d => d.roomId === roomId);
+  async getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]> {
+    const home = this.homes.find(h => h.id === homeId);
+    if (!home) throw new Error('Home not found');
+
+    const room = home.rooms.find(r => r.id === roomId);
+    if (!room) throw new Error('Room not found in home');
+
+    return Object.values(this.devices).filter(d => d.roomId === roomId && d.homeId === homeId);
   }
 
-  async addDevice(roomId: string, name: string, ip?: string): Promise<SiriusDevice> {
+  async addDevice(homeId: string, roomId: string, name: string, ip?: string): Promise<SiriusDevice> {
     const deviceId = `dev-${Math.random().toString(36).substr(2, 9)}`;
+
+    const product: SiriusProduct = {
+      code: 'SIRIUS_SWITCH_1CH',
+      name: 'Sirius 1-Channel Switch',
+      channelCount: 1,
+      capabilities: ['switch'],
+    };
+
     const newDevice: SiriusDevice = {
       factoryId: `ESP32-${Math.random().toString(36).toUpperCase().substr(2, 12)}`,
       displayName: name,
@@ -106,10 +164,19 @@ class MockDeviceRepository implements DeviceRepository {
       connectionStatus: 'online',
       firmwareVersion: '1.0.0',
       roomId: roomId,
+      homeId: homeId,
+      product: product,
       type: 'relay',
-      channels: [{ id: 'ch-1', name: 'Main', powerState: 'off' }],
+      channels: [{
+        id: 'channel-1',
+        index: 1,
+        name: 'Main',
+        state: 'off',
+        capabilities: product.capabilities
+      }],
     };
     this.devices[deviceId] = newDevice;
+
 
     this.addDeviceToRoom(roomId, deviceId);
     await this.save();
@@ -159,7 +226,7 @@ class MockDeviceRepository implements DeviceRepository {
     await this.save();
   }
 
-  async moveDevice(deviceId: string, newRoomId: string): Promise<void> {
+  async moveDevice(deviceId: string, newRoomId: string, newHomeId: string): Promise<void> {
     const device = this.devices[deviceId];
     if (!device) throw new Error('Device not found');
 
@@ -178,6 +245,7 @@ class MockDeviceRepository implements DeviceRepository {
     // Add to new room
     this.addDeviceToRoom(newRoomId, deviceId);
     device.roomId = newRoomId;
+    device.homeId = newHomeId;
 
     await this.save();
   }
@@ -195,16 +263,16 @@ class MockDeviceRepository implements DeviceRepository {
     }
   }
 
-  async setPower(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }> {
+  async setChannelState(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }> {
     const device = this.devices[deviceId];
     if (!device) throw new Error('Device not found');
 
     const channel = device.channels.find(c => c.id === channelId);
     if (!channel) throw new Error('Channel not found');
 
-    channel.powerState = state;
-    device.powerState = device.channels.every(c => c.powerState === 'on') ? 'on' :
-                        device.channels.every(c => c.powerState === 'off') ? 'off' : 'unknown';
+    channel.state = state;
+    device.powerState = device.channels.every(c => c.state === 'on') ? 'on' :
+                        device.channels.every(c => c.state === 'off') ? 'off' : 'unknown';
 
     return { success: true, newState: state };
   }

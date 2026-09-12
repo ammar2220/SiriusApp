@@ -26,10 +26,11 @@ class LocalApiClient {
     return response.data;
   }
 
-  async setPower(ip: string, state: 'on' | 'off'): Promise<{ status: string, state: string }> {
+  async setChannelState(ip: string, channel: number, state: 'on' | 'off'): Promise<{ status: string, state: string }> {
     const client = this.createClient(ip);
     const response = await client.post('/api/control', {
-      power: state,
+      channel,
+      state,
     });
     return response.data;
   }

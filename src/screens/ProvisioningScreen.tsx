@@ -14,6 +14,7 @@ import { Typography, Box, Button, SiriusModal } from '../components/common/UI';
 import { SiriusTheme } from '../constants/theme';
 import apiClient from '../api/local/apiClient';
 import deviceRepository from '../api/repositories/CompositeDeviceRepository';
+import SessionManager from '../api/session/SessionManager';
 
 
 const { WifiProvisioningModule, DeviceDiscoveryModule } = NativeModules;
@@ -122,7 +123,9 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
 
     setStep('FINALIZING');
     try {
-      await deviceRepository.addDevice(roomId, deviceName, discoveredDevice?.ip);
+      const session = await SessionManager.getSession();
+      const homeId = session?.activeHomeId || '';
+      await deviceRepository.addDevice(homeId, roomId, deviceName, discoveredDevice?.ip);
       setStep('SUCCESS');
     } catch (e: any) {
       console.error(`Save Device Error: ${e.message}`);

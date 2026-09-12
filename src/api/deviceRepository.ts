@@ -2,21 +2,24 @@ import { SiriusDevice, Home, Room } from '../types/home';
 
 export interface DeviceRepository {
   // Home Management
-  getHomes(): Promise<Home[]>;
-  getHome(id: string): Promise<Home>;
-  addHome(name: string): Promise<Home>;
+  getHomes(userId: string): Promise<Home[]>;
+  getHome(id: string, userId: string): Promise<Home>;
+  addHome(userId: string, name: string): Promise<Home>;
+  renameHome(homeId: string, newName: string): Promise<void>;
+  deleteHome(homeId: string): Promise<void>;
   addRoom(homeId: string, name: string, type: string): Promise<Room>;
+  renameRoom(homeId: string, roomId: string, newName: string): Promise<void>;
 
   // Device Management
   getDevice(id: string): Promise<SiriusDevice>;
-  getDevicesInRoom(roomId: string): Promise<SiriusDevice[]>;
-  addDevice(roomId: string, name: string, ip?: string): Promise<SiriusDevice>;
+  getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]>;
+  addDevice(homeId: string, roomId: string, name: string, ip?: string): Promise<SiriusDevice>;
   removeDevice(deviceId: string): Promise<void>;
   renameDevice(deviceId: string, newName: string): Promise<void>;
-  moveDevice(deviceId: string, newRoomId: string): Promise<void>;
-  getHomeStats(homeId: string): Promise<{ totalDevices: number, activeDevices: number }>;
+  moveDevice(deviceId: string, newRoomId: string, newHomeId: string): Promise<void>;
+  getHomeStats(homeId: string, userId: string): Promise<{ totalDevices: number, activeDevices: number }>;
 
   // Control
-  setPower(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }>;
+  setChannelState(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }>;
   getState(deviceId: string): Promise<SiriusDevice>;
 }

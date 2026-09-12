@@ -11,20 +11,31 @@ import {
 import { Typography, Box, Button, SiriusModal } from '../../components/common/UI';
 import { SiriusTheme } from '../../constants/theme';
 import deviceRepository from '../../api/repositories/CompositeDeviceRepository';
+import SessionManager from '../../api/session/SessionManager';
 import { Home } from '../../types/home';
 
 interface DashboardProps {
   onNavigateToHome: (homeId: string) => void;
 }
 
-const HomeCard = ({ home, index, onNavigateToHome }: { home: Home, index: number, onNavigateToHome: (id: string) => void }) => {
+const HomeCard = ({ home, index, activeHomeId, onNavigateToHome, onManageHome }: {
+  home: Home,
+  index: number,
+  activeHomeId: string | null,
+  onNavigateToHome: (id: string) => void,
+  onManageHome: (home: Home) => void
+}) => {
   const [stats, setStats] = useState({ totalDevices: 0, activeDevices: 0 });
   const [isLoading, setIsLoading] = useState(true);
+  const isActive = home.id === activeHomeId;
+
 
   useEffect(() => {
     const loadStats = async () => {
       try {
-        const data = await deviceRepository.getHomeStats(home.id);
+        const session = await SessionManager.getSession();
+        const userId = session?.userId || 'user_legacy_v1';
+        const data = await deviceRepository.getHomeStats(home.id, userId);
         setStats(data);
       } catch (e) {
         console.error(e);
@@ -47,7 +58,7 @@ const HomeCard = ({ home, index, onNavigateToHome }: { home: Home, index: number
     <TouchableOpacity
       style={[
         styles.homeCard,
-        index === 0 && styles.activeHomeCard
+        isActive && styles.activeHomeCard
       ]}
       onPress={() => onNavigateToHome(home.id)}
     >
@@ -60,18 +71,41 @@ const HomeCard = ({ home, index, onNavigateToHome }: { home: Home, index: number
           {home.rooms.length} Rooms · {stats.totalDevices} Devices, {stats.activeDevices} devices ON
         </Typography>
       </View>
-      <TouchableOpacity style={styles.chevron}>
-        <Text style={{ color: SiriusTheme.colors.textSecondary }}>→</Text>
-      </TouchableOpacity>
+      <View style={styles.cardActions}>
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={() => onManageHome(home)}
+        >
+          <Text style={styles.actionText}>⚙️</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.chevron}>
+          <Text style={{ color: SiriusTheme.colors.textSecondary }}>→</Text>
+        </TouchableOpacity>
+      </View>
     </TouchableOpacity>
   );
+
 };
 
 const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
   const [homes, setHomes] = useState<Home[]>([]);
+  const [activeHomeId, setActiveHomeId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isAddHomeModalVisible, setIsAddHomeModalVisible] = useState(false);
   const [newHomeName, setNewHomeName] = useState('');
+  const [isManageModalVisible, setIsManageModalVisible] = useState(false);
+  const [selectedHomeForManage, setSelectedHomeForManage] = useState<Home | null>(null);
+  const [manageHomeName, setManageHomeName] = useState('');
+
+  useEffect(() => {
+    const initDashboard = async () => {
+      await loadHomes();
+      const session = await SessionManager.getSession();
+      setActiveHomeId(session?.activeHomeId ?? null);
+    };
+    initDashboard();
+  }, []);
+
 
   useEffect(() => {
     loadHomes();
@@ -80,7 +114,9 @@ const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
   const loadHomes = async () => {
     setIsLoading(true);
     try {
-      const data = await deviceRepository.getHomes();
+      const session = await SessionManager.getSession();
+      const userId = session?.userId || 'user_legacy_v1';
+      const data = await deviceRepository.getHomes(userId);
       setHomes(data);
     } catch (e) {
       console.error(e);
@@ -92,14 +128,54 @@ const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
   const handleAddHome = async () => {
     if (!newHomeName.trim()) return;
     try {
-      await deviceRepository.addHome(newHomeName);
+      const session = await SessionManager.getSession();
+      const userId = session?.userId || 'user_legacy_v1';
+      const newHome = await deviceRepository.addHome(userId, newHomeName);
       setNewHomeName('');
       setIsAddHomeModalVisible(false);
+      await loadHomes();
+      onNavigateToHome(newHome.id);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+
+  const handleManageHome = (home: Home) => {
+    setSelectedHomeForManage(home);
+    setManageHomeName(home.name);
+    setIsManageModalVisible(true);
+  };
+
+  const handleRenameHome = async () => {
+    if (!selectedHomeForManage || !manageHomeName.trim()) return;
+    try {
+      await deviceRepository.renameHome(selectedHomeForManage.id, manageHomeName);
+      setIsManageModalVisible(false);
       await loadHomes();
     } catch (e) {
       console.error(e);
     }
   };
+
+  const handleDeleteHome = async () => {
+    if (!selectedHomeForManage) return;
+    try {
+      const homeIdToDelete = selectedHomeForManage.id;
+      await deviceRepository.deleteHome(homeIdToDelete);
+
+      if (activeHomeId === homeIdToDelete) {
+        await SessionManager.setActiveHome(null);
+        setActiveHomeId(null);
+      }
+
+      setIsManageModalVisible(false);
+      await loadHomes();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
 
   if (isLoading) {
     return (
@@ -123,23 +199,39 @@ const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
 
       <Typography variant="section" style={styles.sectionTitle}>My Homes</Typography>
 
-      <View style={styles.homeList}>
-        {homes.map((home, index) => (
-          <HomeCard
-            key={home.id}
-            home={home}
-            index={index}
-            onNavigateToHome={onNavigateToHome}
+      {homes.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <Typography variant="secondary" style={styles.emptyText}>No homes yet. Create your first home to get started.</Typography>
+          <Button
+            title="+ Create Home"
+            onPress={() => setIsAddHomeModalVisible(true)}
+            variant="primary"
+            style={styles.emptyBtn}
           />
-        ))}
-      </View>
+        </View>
+      ) : (
+        <View style={styles.homeList}>
+          {homes.map((home, index) => (
+            <HomeCard
+              key={home.id}
+              home={home}
+              index={index}
+              activeHomeId={activeHomeId}
+              onNavigateToHome={onNavigateToHome}
+              onManageHome={handleManageHome}
+            />
+          ))}
+        </View>
+      )}
 
-      <Button
-        title="+ Add Home"
-        onPress={() => setIsAddHomeModalVisible(true)}
-        variant="secondary"
-        style={styles.addHomeBtn}
-      />
+      {homes.length > 0 && (
+        <Button
+          title="+ Add Home"
+          onPress={() => setIsAddHomeModalVisible(true)}
+          variant="secondary"
+          style={styles.addHomeBtn}
+        />
+      )}
 
       <SiriusModal
         isVisible={isAddHomeModalVisible}
@@ -162,8 +254,42 @@ const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
           />
         </View>
       </SiriusModal>
+
+      <SiriusModal
+        isVisible={isManageModalVisible}
+        onClose={() => setIsManageModalVisible(false)}
+        title={selectedHomeForManage ? `Manage ${selectedHomeForManage.name}` : 'Manage Home'}
+      >
+        <View style={styles.modalForm}>
+          <Typography variant="secondary" style={styles.label}>Home Name</Typography>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter home name"
+            value={manageHomeName}
+            onChangeText={setManageHomeName}
+            placeholderTextColor={SiriusTheme.colors.disabled}
+          />
+          <View style={styles.modalActions}>
+            <Button
+              title="Save Changes"
+              onPress={handleRenameHome}
+              style={{ flex: 1, marginRight: 8 }}
+            />
+            <Button
+              title="Delete Home"
+              onPress={handleDeleteHome}
+              variant="secondary"
+              style={{ flex: 1, borderColor: 'red' }}
+            />
+          </View>
+          <Typography variant="secondary" style={styles.warningText}>
+            Deleting a home will remove its rooms and devices from the app. Physical devices will NOT be reset.
+          </Typography>
+        </View>
+      </SiriusModal>
     </ScrollView>
   );
+
 };
 
 const styles = StyleSheet.create({
@@ -225,6 +351,22 @@ const styles = StyleSheet.create({
   activeHomeCard: {
     borderColor: SiriusTheme.colors.primary,
   },
+  cardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  actionBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: SiriusTheme.colors.primaryLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  actionText: {
+    fontSize: 14,
+  },
   homeIcon: {
     width: 48,
     height: 48,
@@ -261,6 +403,32 @@ const styles = StyleSheet.create({
     borderColor: SiriusTheme.colors.disabled,
     color: SiriusTheme.colors.textPrimary,
   },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+    marginVertical: 40,
+  },
+  emptyText: {
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  emptyBtn: {
+    width: '100%',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 24,
+  },
+  warningText: {
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 16,
+    color: SiriusTheme.colors.textSecondary,
+  },
+
 });
 
 export default DashboardScreen;

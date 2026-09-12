@@ -11,6 +11,7 @@ import SignUpScreen from './src/screens/auth/SignUpScreen';
 import AutomationsScreen from './src/screens/AutomationsScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
 import deviceRepository from './src/api/repositories/CompositeDeviceRepository';
+import SessionManager from './src/api/session/SessionManager';
 
 const App = () => {
   const [isHydrating, setIsHydrating] = useState(true);
@@ -23,6 +24,8 @@ const App = () => {
     const hydrate = async () => {
       try {
         await deviceRepository.init();
+        const session = await SessionManager.getSession();
+        setSelectedHomeId(session?.activeHomeId || null);
       } catch (e) {
         console.error('App hydration failed', e);
       } finally {
@@ -32,7 +35,8 @@ const App = () => {
     hydrate();
   }, []);
 
-  const navigateToHome = (homeId: string) => {
+  const navigateToHome = async (homeId: string) => {
+    await SessionManager.setActiveHome(homeId);
     setSelectedHomeId(homeId);
     setScreen('home');
   };

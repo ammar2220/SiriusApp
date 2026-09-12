@@ -46,7 +46,7 @@ const HardwareTestScreen = () => {
     if (!device) return;
     setLoading(true);
     try {
-      await apiClient.setPower(device.ipAddress, state);
+      await apiClient.setChannelState(device.ipAddress, 1, state);
       // Refresh state after control
       const newState = await apiClient.getState(device.ipAddress);
       setDevice({ ...device, powerState: newState.power, rssi: newState.rssi });

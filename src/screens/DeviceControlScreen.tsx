@@ -13,6 +13,7 @@ import {
 import { Typography, Box, Button, SiriusModal } from '../components/common/UI';
 import { SiriusTheme } from '../constants/theme';
 import deviceRepository from '../api/repositories/CompositeDeviceRepository';
+import SessionManager from '../api/session/SessionManager';
 import { SiriusDevice, Room } from '../types/home';
 import { CircularPowerDial } from '../components/devices/CircularPowerDial';
 
@@ -49,14 +50,15 @@ const DeviceControlScreen = ({ deviceId, onBack }: DeviceControlProps) => {
     }
   };
 
-  const handleToggle = async () => {
+  const handleToggle = async (channelId: string) => {
     if (!device) return;
-    const currentState = device.powerState as 'on' | 'off';
-    const nextState = currentState === 'on' ? 'off' : 'on';
+    const channel = device.channels.find(c => c.id === channelId);
+    if (!channel) return;
 
+    const nextState = channel.state === 'on' ? 'off' : 'on';
     setIsToggling(true);
     try {
-      await deviceRepository.setPower(deviceId, 'ch-1', nextState);
+      await deviceRepository.setChannelState(deviceId, channelId, nextState);
       await loadDevice();
     } catch (e) {
       console.error(e);
@@ -78,10 +80,12 @@ const DeviceControlScreen = ({ deviceId, onBack }: DeviceControlProps) => {
 
   const handleMove = async (newRoomId: string) => {
     try {
-      await deviceRepository.moveDevice(deviceId, newRoomId);
+      const session = await SessionManager.getSession();
+      const userId = session?.userId || 'user_legacy_v1';
+      const home = await deviceRepository.getHome(device?.homeId || '', userId);
+
+      await deviceRepository.moveDevice(deviceId, newRoomId, home.id);
       setIsMoveModalVisible(false);
-      // loadDevice() is called, but we want to ensure the UI doesn't flick
-      // and that the state is fully synced before updating.
       await loadDevice();
     } catch (e: any) {
       Alert.alert('Error', e.message);
@@ -100,7 +104,9 @@ const DeviceControlScreen = ({ deviceId, onBack }: DeviceControlProps) => {
 
   const openMoveModal = async () => {
     try {
-      const homes = await deviceRepository.getHomes();
+      const session = await SessionManager.getSession();
+      const userId = session?.userId || 'user_legacy_v1';
+      const homes = await deviceRepository.getHomes(userId);
       const currentHome = homes.find(h =>
         h.rooms.some(r => r.id === device?.roomId)
       );
@@ -149,7 +155,9 @@ const DeviceControlScreen = ({ deviceId, onBack }: DeviceControlProps) => {
           >
             {device.displayName}
           </Typography>
-          <Typography variant="secondary" style={styles.roomSubtitle}>{device.roomId}</Typography>
+          <Typography variant="secondary" style={styles.roomSubtitle}>
+            {device.product.name} • {device.roomId}
+          </Typography>
         </View>
         <TouchableOpacity
           style={styles.moreBtn}
@@ -161,10 +169,24 @@ const DeviceControlScreen = ({ deviceId, onBack }: DeviceControlProps) => {
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.controlArea}>
-          <CircularPowerDial
-            state={device.powerState as 'on' | 'off'}
-            onToggle={handleToggle}
-          />
+          <View style={styles.channelList}>
+            {device.channels.map((channel) => (
+              <View key={channel.id} style={styles.channelControl}>
+                <View style={styles.channelInfo}>
+                  <Typography variant="body" style={styles.channelName}>
+                    {channel.name}
+                  </Typography>
+                  <Typography variant="secondary" style={styles.channelIndex}>
+                    CH {channel.index}
+                  </Typography>
+                </View>
+                <CircularPowerDial
+                  state={channel.state as 'on' | 'off'}
+                  onToggle={() => handleToggle(channel.id)}
+                />
+              </View>
+            ))}
+          </View>
 
           <View style={styles.statusBadge}>
             <View style={[styles.dot, { backgroundColor: device.connectionStatus === 'online' ? '#34C759' : '#FF3B30' }]} />
@@ -185,8 +207,8 @@ const DeviceControlScreen = ({ deviceId, onBack }: DeviceControlProps) => {
             <Typography variant="body">{device.firmwareVersion}</Typography>
           </View>
           <View style={styles.infoRow}>
-            <Typography variant="secondary">Secondary</Typography>
-            <Typography variant="body">#6B7280</Typography>
+            <Typography variant="secondary">Product</Typography>
+            <Typography variant="body">{device.product.code}</Typography>
           </View>
         </Box>
       </ScrollView>
@@ -320,6 +342,36 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginVertical: 40,
+  },
+  channelList: {
+    gap: 24,
+    marginBottom: 40,
+    width: '100%',
+  },
+  channelControl: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: SiriusTheme.colors.surface,
+    padding: SiriusTheme.spacing.m,
+    borderRadius: SiriusTheme.borderRadius.l,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+  },
+  channelInfo: {
+    flexDirection: 'column',
+    gap: 4,
+  },
+  channelName: {
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  channelIndex: {
+    fontSize: 12,
+    textTransform: 'uppercase',
   },
   statusBadge: {
     flexDirection: 'row',

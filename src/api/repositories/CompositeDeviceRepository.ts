@@ -14,18 +14,18 @@ class CompositeDeviceRepository implements DeviceRepository {
     ]);
   }
 
-  async getHomes(): Promise<Home[]> {
+  async getHomes(userId: string): Promise<Home[]> {
     // Default to mock homes for the overall structure
-    return this.mockRepo.getHomes();
+    return this.mockRepo.getHomes(userId);
   }
 
-  async getHomeStats(homeId: string): Promise<{ totalDevices: number, activeDevices: number }> {
-    const home = await this.getHome(homeId);
+  async getHomeStats(homeId: string, userId: string): Promise<{ totalDevices: number, activeDevices: number }> {
+    const home = await this.getHome(homeId, userId);
     let total = 0;
     let active = 0;
 
     for (const room of home.rooms) {
-      const devices = await this.getDevicesInRoom(room.id);
+      const devices = await this.getDevicesInRoom(homeId, room.id);
       total += devices.length;
       active += devices.filter(d => d.powerState === 'on').length;
     }
@@ -33,16 +33,28 @@ class CompositeDeviceRepository implements DeviceRepository {
     return { totalDevices: total, activeDevices: active };
   }
 
-  async getHome(id: string): Promise<Home> {
-    return this.mockRepo.getHome(id);
+  async getHome(id: string, userId: string): Promise<Home> {
+    return this.mockRepo.getHome(id, userId);
   }
 
-  async addHome(name: string): Promise<Home> {
-    return this.mockRepo.addHome(name);
+  async addHome(userId: string, name: string): Promise<Home> {
+    return this.mockRepo.addHome(userId, name);
+  }
+
+  async renameHome(homeId: string, newName: string): Promise<void> {
+    return this.mockRepo.renameHome(homeId, newName);
+  }
+
+  async deleteHome(homeId: string): Promise<void> {
+    return this.mockRepo.deleteHome(homeId);
   }
 
   async addRoom(homeId: string, name: string, type: string): Promise<Room> {
     return this.mockRepo.addRoom(homeId, name, type);
+  }
+
+  async renameRoom(homeId: string, roomId: string, newName: string): Promise<void> {
+    return this.mockRepo.renameRoom(homeId, roomId, newName);
   }
 
   async getDevice(id: string): Promise<SiriusDevice> {
@@ -55,16 +67,16 @@ class CompositeDeviceRepository implements DeviceRepository {
     }
   }
 
-  async getDevicesInRoom(roomId: string): Promise<SiriusDevice[]> {
-    const mockDevices = await this.mockRepo.getDevicesInRoom(roomId);
-    const localDevices = await this.localRepo.getDevicesInRoom(roomId);
+  async getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]> {
+    const mockDevices = await this.mockRepo.getDevicesInRoom(homeId, roomId);
+    const localDevices = await this.localRepo.getDevicesInRoom(homeId, roomId);
     return [...mockDevices, ...localDevices];
   }
 
-  async addDevice(roomId: string, name: string, ip?: string): Promise<SiriusDevice> {
+  async addDevice(homeId: string, roomId: string, name: string, ip?: string): Promise<SiriusDevice> {
     if (ip) {
       // 1. Register in local repository (returns device with factoryId as id)
-      const device = await this.localRepo.addDevice(roomId, name, ip);
+      const device = await this.localRepo.addDevice(homeId, roomId, name, ip);
 
       // 2. Link the physical device ID to the logical room in the mock hierarchy
       await this.mockRepo.addDeviceToRoom(roomId, device.factoryId);
@@ -72,16 +84,16 @@ class CompositeDeviceRepository implements DeviceRepository {
       return device;
     }
     // Otherwise, add as a mock device
-    return this.mockRepo.addDevice(roomId, name);
+    return this.mockRepo.addDevice(homeId, roomId, name);
   }
 
-  async setPower(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }> {
+  async setChannelState(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }> {
     try {
       // Try local first
-      return await this.localRepo.setPower(deviceId, channelId, state);
+      return await this.localRepo.setChannelState(deviceId, channelId, state);
     } catch {
       // Fallback to mock
-      return await this.mockRepo.setPower(deviceId, channelId, state);
+      return await this.mockRepo.setChannelState(deviceId, channelId, state);
     }
   }
 
@@ -121,14 +133,14 @@ class CompositeDeviceRepository implements DeviceRepository {
     }
   }
 
-  async moveDevice(deviceId: string, newRoomId: string): Promise<void> {
+  async moveDevice(deviceId: string, newRoomId: string, newHomeId: string): Promise<void> {
     const device = await this.getDevice(deviceId);
     const oldRoomId = device.roomId;
     if (oldRoomId === newRoomId) return;
 
     try {
       // Try moving as a real device first
-      await this.localRepo.moveDevice(deviceId, newRoomId);
+      await this.localRepo.moveDevice(deviceId, newRoomId, newHomeId);
 
       // If that worked, it's a real device. We MUST update the room hierarchy in mockRepo.
       // We don't call mockRepo.moveDevice because that requires the device to be in mockRepo.devices.
@@ -137,7 +149,7 @@ class CompositeDeviceRepository implements DeviceRepository {
     } catch (e: any) {
       if (e.message === 'Device not found') {
         // Fallback: move as a mock device
-        await this.mockRepo.moveDevice(deviceId, newRoomId);
+        await this.mockRepo.moveDevice(deviceId, newRoomId, newHomeId);
       } else {
         throw e;
       }

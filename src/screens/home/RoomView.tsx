@@ -11,6 +11,7 @@ import { Typography, Box, Button, SiriusModal } from '../../components/common/UI
 import { DeviceCard } from '../../components/devices/DeviceCard';
 import { SiriusTheme } from '../../constants/theme';
 import deviceRepository from '../../api/repositories/CompositeDeviceRepository';
+import SessionManager from '../../api/session/SessionManager';
 import { SiriusDevice, Room } from '../../types/home';
 
 interface RoomViewProps {
@@ -32,13 +33,15 @@ const RoomView = ({ roomId, onBack, onNavigateToDevice, onNavigateToProvisioning
   const loadRoomData = async () => {
     setIsLoading(true);
     try {
-      const homes = await deviceRepository.getHomes();
+      const session = await SessionManager.getSession();
+      const userId = session?.userId || 'user_legacy_v1';
+      const homes = await deviceRepository.getHomes(userId);
       const home = homes.find(h => h.rooms.some(r => r.id === roomId));
       if (home) {
         const roomData = home.rooms.find(r => r.id === roomId);
         if (roomData) {
           setRoom(roomData);
-          const devicesData = await deviceRepository.getDevicesInRoom(roomId);
+          const devicesData = await deviceRepository.getDevicesInRoom(home.id, roomId);
           setDevices(devicesData);
         }
       }
@@ -51,8 +54,13 @@ const RoomView = ({ roomId, onBack, onNavigateToDevice, onNavigateToProvisioning
 
   const handleToggle = async (deviceId: string, channelId: string, state: 'on' | 'off') => {
     try {
-      await deviceRepository.setPower(deviceId, channelId, state);
-      const updatedDevices = await deviceRepository.getDevicesInRoom(roomId);
+      await deviceRepository.setChannelState(deviceId, channelId, state);
+      const session = await SessionManager.getSession();
+      const userId = session?.userId || 'user_legacy_v1';
+      const homes = await deviceRepository.getHomes(userId);
+      const home = homes.find(h => h.rooms.some(r => r.id === roomId));
+      const homeId = home?.id || '';
+      const updatedDevices = await deviceRepository.getDevicesInRoom(homeId, roomId);
       setDevices(updatedDevices);
     } catch (e) {
       console.error(e);

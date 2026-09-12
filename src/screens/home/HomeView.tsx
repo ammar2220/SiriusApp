@@ -12,6 +12,7 @@ import { Typography, Box, Button, SiriusModal } from '../../components/common/UI
 import { DeviceCard } from '../../components/devices/DeviceCard';
 import { SiriusTheme } from '../../constants/theme';
 import deviceRepository from '../../api/repositories/CompositeDeviceRepository';
+import SessionManager from '../../api/session/SessionManager';
 import { Home, SiriusDevice, Room } from '../../types/home';
 
 interface HomeViewProps {
@@ -22,16 +23,20 @@ interface HomeViewProps {
 }
 
 const RoomSection = ({
+  homeId,
   room,
   onNavigateToRoom,
   onNavigateToDevice,
   onTogglePower,
+  onRenameRoom,
   refreshKey,
 }: {
+  homeId: string;
   room: Room;
   onNavigateToRoom: (id: string) => void;
   onNavigateToDevice: (id: string) => void;
   onTogglePower: (deviceId: string, channelId: string, state: 'on' | 'off') => void;
+  onRenameRoom: (room: Room) => void;
   refreshKey: number;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -45,7 +50,7 @@ const RoomSection = ({
       setIsLoading(true);
     }
     try {
-      const data = await deviceRepository.getDevicesInRoom(room.id);
+      const data = await deviceRepository.getDevicesInRoom(homeId, room.id);
       setDevices(data);
     } catch (e) {
       console.error(e);
@@ -72,6 +77,12 @@ const RoomSection = ({
           <Typography variant="section">{room.name}</Typography>
         </View>
         <View style={styles.roomActions}>
+          <TouchableOpacity
+            onPress={() => onRenameRoom(room)}
+            style={styles.renameBtn}
+          >
+            <Typography variant="secondary" style={styles.renameText}>Edit</Typography>
+          </TouchableOpacity>
           <TouchableOpacity onPress={() => onNavigateToRoom(room.id)} style={styles.seeAllBtn}>
             <Typography variant="secondary" style={styles.seeAll}>See all</Typography>
           </TouchableOpacity>
@@ -109,6 +120,10 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomType, setNewRoomType] = useState('Living');
   const [refreshKey, setRefreshKey] = useState(0);
+  const [isRenameModalVisible, setIsRenameModalVisible] = useState(false);
+  const [selectedRoomForRename, setSelectedRoomForRename] = useState<Room | null>(null);
+  const [renameRoomName, setRenameRoomName] = useState('');
+
 
   useEffect(() => {
     loadHome();
@@ -121,7 +136,9 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
   const loadHome = async () => {
     setIsLoading(true);
     try {
-      const data = await deviceRepository.getHome(homeId);
+      const session = await SessionManager.getSession();
+      const userId = session?.userId || 'user_legacy_v1';
+      const data = await deviceRepository.getHome(homeId, userId);
       setHome(data);
     } catch (e) {
       console.error(e);
@@ -142,9 +159,26 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
     }
   };
 
+  const handleOpenRenameModal = (room: Room) => {
+    setSelectedRoomForRename(room);
+    setRenameRoomName(room.name);
+    setIsRenameModalVisible(true);
+  };
+
+  const handleRenameRoom = async () => {
+    if (!selectedRoomForRename || !renameRoomName.trim()) return;
+    try {
+      await deviceRepository.renameRoom(homeId, selectedRoomForRename.id, renameRoomName);
+      setIsRenameModalVisible(false);
+      await loadHome();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleToggle = async (deviceId: string, channelId: string, state: 'on' | 'off') => {
     try {
-      await deviceRepository.setPower(deviceId, channelId, state);
+      await deviceRepository.setChannelState(deviceId, channelId, state);
       await loadHome();
       setRefreshKey(prev => prev + 1);
     } catch (e) {
@@ -182,16 +216,31 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
 
       <Typography variant="section" style={styles.sectionTitle}>My Rooms</Typography>
 
-      {home.rooms.map(room => (
-        <RoomSection
-          key={room.id}
-          room={room}
-          onNavigateToRoom={onNavigateToRoom}
-          onNavigateToDevice={onNavigateToDevice}
-          onTogglePower={handleToggle}
-          refreshKey={refreshKey}
-        />
-      ))}
+      {home.rooms.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <Typography variant="secondary" style={styles.emptyText}>No rooms yet. Create a room to organize your devices.</Typography>
+          <Button
+            title="+ Create Room"
+            onPress={() => setIsAddRoomModalVisible(true)}
+            variant="primary"
+            style={styles.emptyBtn}
+          />
+        </View>
+      ) : (
+        home.rooms.map(room => (
+          <RoomSection
+            key={room.id}
+            homeId={homeId}
+            room={room}
+            onNavigateToRoom={onNavigateToRoom}
+            onNavigateToDevice={onNavigateToDevice}
+            onTogglePower={handleToggle}
+            onRenameRoom={handleOpenRenameModal}
+            refreshKey={refreshKey}
+          />
+        ))
+      )}
+
 
       <Button
         title="+ Add Room"
@@ -225,6 +274,28 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
           <Button
             title="Save Room"
             onPress={handleAddRoom}
+            style={{ marginTop: 24 }}
+          />
+        </View>
+      </SiriusModal>
+
+      <SiriusModal
+        isVisible={isRenameModalVisible}
+        onClose={() => setIsRenameModalVisible(false)}
+        title={selectedRoomForRename ? `Rename ${selectedRoomForRename.name}` : 'Rename Room'}
+      >
+        <View style={styles.modalForm}>
+          <Typography variant="secondary" style={styles.label}>Room Name</Typography>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter new room name"
+            value={renameRoomName}
+            onChangeText={setRenameRoomName}
+            placeholderTextColor={SiriusTheme.colors.disabled}
+          />
+          <Button
+            title="Save Changes"
+            onPress={handleRenameRoom}
             style={{ marginTop: 24 }}
           />
         </View>
@@ -305,6 +376,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
+  renameBtn: {
+    paddingVertical: 4,
+  },
+  renameText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: SiriusTheme.colors.primary,
+  },
   seeAllBtn: {
     paddingVertical: 4,
   },
@@ -351,6 +430,21 @@ const styles = StyleSheet.create({
     borderColor: SiriusTheme.colors.disabled,
     color: SiriusTheme.colors.textPrimary,
   },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+    marginVertical: 40,
+  },
+  emptyText: {
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  emptyBtn: {
+    width: '100%',
+  },
+
 });
 
 export default HomeView;
