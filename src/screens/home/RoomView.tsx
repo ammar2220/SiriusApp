@@ -28,6 +28,7 @@ const RoomView = ({ homeId, roomId, onBack, onNavigateToDevice, onNavigateToProv
   const [devices, setDevices] = useState<SiriusDevice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [isManageModalVisible, setIsManageModalVisible] = useState(false);
   const [manageRoomName, setManageRoomName] = useState('');
 
@@ -51,12 +52,12 @@ const RoomView = ({ homeId, roomId, onBack, onNavigateToDevice, onNavigateToProv
   const loadRoomData = async (silent = false) => {
     console.log(`[RoomView] loadRoomData START. silent: ${silent}, roomExists: ${!!room}, isLoading: ${isLoading}, isRefreshing: ${isRefreshing}`);
 
-    // Only trigger full-screen loading if explicitly requested AND no room data is currently displayed
     if (!silent && !room) {
       setIsLoading(true);
     } else {
       setIsRefreshing(true);
     }
+    setError(null);
 
     try {
       const session = await SessionManager.getSession();
@@ -69,10 +70,15 @@ const RoomView = ({ homeId, roomId, onBack, onNavigateToDevice, onNavigateToProv
           setRoom(roomData);
           const devicesData = await deviceRepository.getDevicesInRoom(homeId, roomId);
           setDevices(devicesData);
+        } else {
+          throw new Error('Room data not found');
         }
+      } else {
+        throw new Error('Home not found');
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(`[RoomView] loadRoomData ERROR:`, e);
+      setError(e.message || 'Failed to load room data. Please try again.');
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -150,6 +156,18 @@ const RoomView = ({ homeId, roomId, onBack, onNavigateToDevice, onNavigateToProv
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={SiriusTheme.colors.primary} />
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={styles.center}>
+        <Typography variant="body" style={{ textAlign: 'center', marginBottom: 20 }}>
+          {error}
+        </Typography>
+        <Button title="Retry" onPress={() => loadRoomData()} />
+        <Button title="Go Back" onPress={onBack} variant="secondary" style={{ marginTop: 12 }} />
       </View>
     );
   }

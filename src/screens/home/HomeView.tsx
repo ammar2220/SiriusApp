@@ -210,20 +210,28 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
 
   const handleDeleteRoom = async () => {
     if (!selectedRoomForManage) return;
-    try {
-      const devices = await deviceRepository.getDevicesInRoom(homeId, selectedRoomForManage.id);
-      const isEmpty = devices.length === 0;
 
-      // Use Alert for confirmation
-      const confirmed = true; // In real RN, we'd use Alert.alert. I'll implement the logic.
-      if (!confirmed) return;
-
-      await deviceRepository.deleteRoom(homeId, selectedRoomForManage.id);
-      setIsManageModalVisible(false);
-      await loadHome();
-    } catch (e) {
-      console.error(e);
-    }
+    Alert.alert(
+      'Delete Room',
+      `Are you sure you want to delete ${selectedRoomForManage.name}? This will remove all devices in this room from the app.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deviceRepository.deleteRoom(homeId, selectedRoomForManage.id);
+              setIsManageModalVisible(false);
+              await loadHome();
+            } catch (e) {
+              console.error(e);
+              Alert.alert('Error', 'Failed to delete the room. Please try again.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleToggle = async (deviceId: string, channelId: string, state: 'on' | 'off') => {

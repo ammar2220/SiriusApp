@@ -220,7 +220,7 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
               secureTextEntry
             />
             <TouchableOpacity style={styles.button} onPress={runProvisioningFlow}>
-              <Text style={styles.buttonText}>Start Provisioning</Text>
+              <Text style={styles.buttonText}>Connect Device</Text>
             </TouchableOpacity>
           </View>
         );
@@ -257,8 +257,7 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
           <View style={styles.section}>
             <Text style={styles.successText}>Device Found!</Text>
             <View style={styles.deviceInfo}>
-              <Text style={styles.infoText}>ID: {discoveredDevice?.id}</Text>
-              <Text style={styles.infoText}>IP: {discoveredDevice?.ip}</Text>
+              <Text style={styles.infoText}>Your Sirius device has been successfully verified.</Text>
             </View>
             <TouchableOpacity style={styles.button} onPress={handleConfirmIdentity}>
               <Text style={styles.buttonText}>Confirm & Name Device</Text>
@@ -304,7 +303,7 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
       case 'FAILED':
         return (
           <View style={styles.section}>
-            <Text style={styles.errorText}>❌ Provisioning Failed</Text>
+            <Text style={styles.errorText}>❌ Connection Failed</Text>
             <Text style={styles.infoText}>{errorMessage}</Text>
             <TouchableOpacity style={styles.button} onPress={() => setStep('INPUT')}>
               <Text style={styles.buttonText}>Try Again</Text>
@@ -320,7 +319,7 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
         <TouchableOpacity onPress={() => onBack && onBack()} style={styles.backBtn}>
           <Typography variant="secondary">← Back</Typography>
         </TouchableOpacity>
-        <Typography variant="screenTitle" style={styles.title}>Device Provisioning</Typography>
+        <Typography variant="screenTitle" style={styles.title}>Connecting your Sirius device</Typography>
         <View style={{ width: 60 }} />
       </View>
       {renderStep()}
