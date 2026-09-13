@@ -4,7 +4,10 @@ export interface DeviceInfo {
 }
 
 export interface DeviceState {
-  power: 'on' | 'off';
+  channels: Array<{
+    index: number;
+    state: 'on' | 'off';
+  }>;
   rssi: number;
 }
 

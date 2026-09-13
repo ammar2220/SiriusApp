@@ -2,6 +2,7 @@ import { DeviceRepository } from '../deviceRepository';
 import { Home, Room, SiriusDevice } from '../../types/home';
 import MockDeviceRepository from './MockDeviceRepository';
 import LocalEsp32DeviceRepository from './LocalEsp32DeviceRepository';
+import SessionManager from '../session/SessionManager';
 
 class CompositeDeviceRepository implements DeviceRepository {
   private mockRepo = MockDeviceRepository;
@@ -27,7 +28,7 @@ class CompositeDeviceRepository implements DeviceRepository {
     for (const room of home.rooms) {
       const devices = await this.getDevicesInRoom(homeId, room.id);
       total += devices.length;
-      active += devices.filter(d => d.powerState === 'on').length;
+      active += devices.filter(d => d.channels.some(ch => ch.state === 'on')).length;
     }
 
     return { totalDevices: total, activeDevices: active };
@@ -57,10 +58,22 @@ class CompositeDeviceRepository implements DeviceRepository {
     return this.mockRepo.renameRoom(homeId, roomId, newName);
   }
 
+  async deleteRoom(homeId: string, roomId: string): Promise<void> {
+    return this.mockRepo.deleteRoom(homeId, roomId);
+  }
+
   async getDevice(id: string): Promise<SiriusDevice> {
     try {
       // Try local first (real devices)
-      return await this.localRepo.getDevice(id);
+      let device = await this.localRepo.getDevice(id);
+
+      // Resolve hierarchy from authoritative source
+      const location = await this.mockRepo.findRoomForDevice(id);
+      if (location) {
+        device = { ...device, roomId: location.roomId, homeId: location.homeId };
+      }
+
+      return device;
     } catch {
       // Fallback to mock
       return await this.mockRepo.getDevice(id);
@@ -68,9 +81,35 @@ class CompositeDeviceRepository implements DeviceRepository {
   }
 
   async getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]> {
-    const mockDevices = await this.mockRepo.getDevicesInRoom(homeId, roomId);
-    const localDevices = await this.localRepo.getDevicesInRoom(homeId, roomId);
-    return [...mockDevices, ...localDevices];
+    const session = await SessionManager.getSession();
+    const userId = session?.userId || 'user_legacy_v1';
+    const home = await this.mockRepo.getHome(homeId, userId);
+    const room = home.rooms.find(r => r.id === roomId);
+    if (!room) throw new Error('Room not found');
+
+    const deviceIds = room.devices;
+    const resolvedDevices: SiriusDevice[] = [];
+
+    for (const id of deviceIds) {
+      try {
+        let device = await this.getDevice(id);
+
+        // Enrich with hierarchy info since the repo itself no longer stores it
+        device = {
+          ...device,
+          homeId,
+          roomId,
+        };
+
+        resolvedDevices.push(device);
+      } catch (e) {
+        // Silently skip devices that cannot be resolved (e.g., removed devices)
+        // to avoid UI errors during state synchronization.
+        continue;
+      }
+    }
+
+    return resolvedDevices;
   }
 
   async addDevice(homeId: string, roomId: string, name: string, ip?: string): Promise<SiriusDevice> {
@@ -134,26 +173,8 @@ class CompositeDeviceRepository implements DeviceRepository {
   }
 
   async moveDevice(deviceId: string, newRoomId: string, newHomeId: string): Promise<void> {
-    const device = await this.getDevice(deviceId);
-    const oldRoomId = device.roomId;
-    if (oldRoomId === newRoomId) return;
-
-    try {
-      // Try moving as a real device first
-      await this.localRepo.moveDevice(deviceId, newRoomId, newHomeId);
-
-      // If that worked, it's a real device. We MUST update the room hierarchy in mockRepo.
-      // We don't call mockRepo.moveDevice because that requires the device to be in mockRepo.devices.
-      await this.mockRepo.removeDeviceFromRoom(oldRoomId, deviceId);
-      await this.mockRepo.addDeviceToRoom(newRoomId, deviceId);
-    } catch (e: any) {
-      if (e.message === 'Device not found') {
-        // Fallback: move as a mock device
-        await this.mockRepo.moveDevice(deviceId, newRoomId, newHomeId);
-      } else {
-        throw e;
-      }
-    }
+    // Delegate hierarchy move exclusively to MockDeviceRepository
+    await this.mockRepo.moveDevice(deviceId, newRoomId, newHomeId);
   }
 }
 

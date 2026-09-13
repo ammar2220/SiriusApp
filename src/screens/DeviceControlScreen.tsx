@@ -26,6 +26,8 @@ const DeviceControlScreen = ({ deviceId, onBack }: DeviceControlProps) => {
   const [device, setDevice] = useState<SiriusDevice | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isToggling, setIsToggling] = useState(false);
+  const [roomName, setRoomName] = useState<string>('');
+
 
   // Lifecycle Modals State
   const [isMoreMenuVisible, setIsMoreMenuVisible] = useState(false);
@@ -43,6 +45,15 @@ const DeviceControlScreen = ({ deviceId, onBack }: DeviceControlProps) => {
     try {
       const data = await deviceRepository.getDevice(deviceId);
       setDevice(data);
+
+      // Resolve room name
+      if (data.roomId) {
+        const session = await SessionManager.getSession();
+        const userId = session?.userId || 'user_legacy_v1';
+        const home = await deviceRepository.getHome(data.homeId, userId);
+        const room = home?.rooms.find(r => r.id === data.roomId);
+        setRoomName(room ? room.name : data.roomId);
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -156,7 +167,7 @@ const DeviceControlScreen = ({ deviceId, onBack }: DeviceControlProps) => {
             {device.displayName}
           </Typography>
           <Typography variant="secondary" style={styles.roomSubtitle}>
-            {device.product.name} • {device.roomId}
+            {device.product.name} • {roomName}
           </Typography>
         </View>
         <TouchableOpacity

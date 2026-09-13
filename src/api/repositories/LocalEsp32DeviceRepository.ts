@@ -9,8 +9,8 @@ const { DeviceDiscoveryModule } = NativeModules;
 class LocalEsp32DeviceRepository implements DeviceRepository {
   // Stores real physical devices discovered/provisioned
   // Key: factoryId, Value: device config
-  private deviceMap: Record<string, { ip: string, name: string, roomId: string, homeId: string }> = {
-    'ESP32-80:f3:da:5e:1b:ec': { ip: '192.168.1.8:80', name: 'ESP32 Prototype', roomId: 'room-1', homeId: 'home-1' },
+  private deviceMap: Record<string, { ip: string, name: string }> = {
+    'ESP32-80:f3:da:5e:1b:ec': { ip: '192.168.1.8:80', name: 'ESP32 Prototype' },
   };
 
   async init(): Promise<void> {
@@ -34,11 +34,35 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
     const info = await apiClient.getInfo(ip);
     const state = await apiClient.getState(ip);
 
+    const channelCount = state.channels.length;
+    const channelNames = ['Main', 'Secondary', 'Auxiliary'];
+
+    const mappedChannels = state.channels.map((ch, idx) => ({
+      id: `ch-${ch.index}`,
+      index: ch.index,
+      name: channelNames[idx] || `Channel ${idx + 1}`,
+      state: ch.state,
+      capabilities: ['switch'],
+    }));
+
+    const powerState = mappedChannels.some(c => c.state === 'on') ? 'on' :
+                       mappedChannels.every(c => c.state === 'off') ? 'off' : 'unknown';
+
+    const productCode = channelCount === 1 ? 'SIRIUS_SWITCH_1CH' :
+                        channelCount === 2 ? 'SIRIUS_SWITCH_2CH' :
+                        channelCount === 3 ? 'SIRIUS_SWITCH_3CH' : 'SIRIUS_SWITCH_1CH';
+
+    const productNames: Record<string, string> = {
+      'SIRIUS_SWITCH_1CH': 'Sirius 1-Channel Switch',
+      'SIRIUS_SWITCH_2CH': 'Sirius 2-Channel Switch',
+      'SIRIUS_SWITCH_3CH': 'Sirius 3-Channel Switch',
+    };
+
     return {
       factoryId: info.id,
       displayName: '', // Will be filled by the caller using deviceMap
       ipAddress: ip,
-      powerState: state.power as 'on' | 'off',
+      powerState,
       rssi: state.rssi,
       connectionStatus: 'online',
       firmwareVersion: info.ver,
@@ -46,12 +70,12 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
       homeId: '', // Will be filled by the caller
       type: 'relay',
       product: {
-        code: 'SIRIUS_SWITCH_1CH',
-        name: 'Sirius 1-Channel Switch',
-        channelCount: 1,
+        code: productCode,
+        name: productNames[productCode] || 'Sirius Switch',
+        channelCount: channelCount,
         capabilities: ['switch'],
       },
-      channels: [{ id: 'ch-1', index: 1, name: 'Main', state: state.power as 'on' | 'off', capabilities: ['switch'] }],
+      channels: mappedChannels,
     };
   }
 
@@ -139,7 +163,6 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
       return {
         ...data,
         displayName: config.name,
-        roomId: config.roomId,
       };
     } catch (e) {
       return {
@@ -150,8 +173,8 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
         rssi: 0,
         connectionStatus: 'offline',
         firmwareVersion: 'unknown',
-        roomId: config.roomId,
-        homeId: config.homeId,
+        roomId: '',
+        homeId: '',
         type: 'relay',
         product: {
           code: 'SIRIUS_SWITCH_1CH',
@@ -165,13 +188,7 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
   }
 
   async getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]> {
-    const devicesInRoom = Object.entries(this.deviceMap)
-      .filter(([_, config]) => config.roomId === roomId && config.homeId === homeId)
-      .map(([id, _]) => id);
-
-    return await Promise.all(
-      devicesInRoom.map(id => this.getDevice(id))
-    );
+    return []; // Now handled by CompositeDeviceRepository via the authoritative hierarchy
   }
 
   async addDevice(homeId: string, roomId: string, name: string, ip?: string): Promise<SiriusDevice> {
@@ -184,8 +201,6 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
       this.deviceMap[factoryId] = {
         ip: deviceIp,
         name,
-        roomId,
-        homeId
       };
 
       await this.save();
@@ -234,19 +249,13 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
   }
 
   async moveDevice(deviceId: string, newRoomId: string, newHomeId: string): Promise<void> {
-    if (!this.deviceMap[deviceId]) {
-      throw new Error('Device not found');
-    }
-    this.deviceMap[deviceId].roomId = newRoomId;
-    this.deviceMap[deviceId].homeId = newHomeId;
-    await this.save();
+    // Hierarchy movement is now authoritative in MockDeviceRepository
   }
 
   async setChannelState(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }> {
     return this.executeWithRecovery(deviceId, async (ip) => {
-      // For now, we map channelId 'ch-1' to index 1.
-      // In a full implementation, we'd resolve this via the device's product model.
-      const channelIndex = channelId === 'ch-1' ? 1 : 1;
+      // Map channelId 'ch-X' to index X
+      const channelIndex = parseInt(channelId.replace('ch-', ''), 10) || 1;
       await apiClient.setChannelState(ip, channelIndex, state);
       return { success: true, newState: state };
     });
@@ -259,7 +268,6 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
       return {
         ...data,
         displayName: config?.name || '',
-        roomId: config?.roomId || '',
       };
     });
   }

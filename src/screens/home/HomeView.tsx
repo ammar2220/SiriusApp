@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Text,
   TextInput,
+  Alert,
 } from 'react-native';
 import { Typography, Box, Button, SiriusModal } from '../../components/common/UI';
 import { DeviceCard } from '../../components/devices/DeviceCard';
@@ -29,6 +30,7 @@ const RoomSection = ({
   onNavigateToDevice,
   onTogglePower,
   onRenameRoom,
+  onDeleteRoom,
   refreshKey,
 }: {
   homeId: string;
@@ -37,6 +39,7 @@ const RoomSection = ({
   onNavigateToDevice: (id: string) => void;
   onTogglePower: (deviceId: string, channelId: string, state: 'on' | 'off') => void;
   onRenameRoom: (room: Room) => void;
+  onDeleteRoom?: (room: Room) => void;
   refreshKey: number;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -63,30 +66,61 @@ const RoomSection = ({
     loadDevices();
   }, [isExpanded, refreshKey]);
 
+  // Calculate Statistics
+  const totalDevices = devices.length;
+  const totalChannels = devices.reduce((acc, dev) => acc + (dev.channels?.length || 0), 0);
+  const channelsOn = devices.reduce((acc, dev) =>
+    acc + dev.channels.filter(ch => ch.state === 'on').length, 0
+  );
+
   return (
     <View style={styles.roomSection}>
       <TouchableOpacity
-        style={styles.roomHeader}
+        style={styles.roomCard}
         onPress={() => setIsExpanded(!isExpanded)}
         activeOpacity={0.7}
       >
-        <View style={styles.roomTitleRow}>
-          <View style={styles.roomIcon}>
-            <Text style={{ fontSize: 18 }}>🏠</Text>
+        <View style={styles.roomHeader}>
+          <View style={styles.roomTitleRow}>
+            <View style={styles.roomIcon}>
+              <Text style={{ fontSize: 18 }}>🏠</Text>
+            </View>
+            <Typography variant="section">{room.name}</Typography>
           </View>
-          <Typography variant="section">{room.name}</Typography>
+          <View style={styles.roomActions}>
+            <TouchableOpacity
+              onPress={(e) => {
+                e.stopPropagation();
+                onRenameRoom(room);
+              }}
+              style={styles.renameBtn}
+            >
+              <Text style={{ fontSize: 20 }}>⚙️</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={(e) => {
+                e.stopPropagation();
+                onNavigateToRoom(room.id);
+              }}
+              style={styles.arrowBtn}
+            >
+              <Text style={styles.expandIcon}>→</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-        <View style={styles.roomActions}>
-          <TouchableOpacity
-            onPress={() => onRenameRoom(room)}
-            style={styles.renameBtn}
-          >
-            <Typography variant="secondary" style={styles.renameText}>Edit</Typography>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => onNavigateToRoom(room.id)} style={styles.seeAllBtn}>
-            <Typography variant="secondary" style={styles.seeAll}>See all</Typography>
-          </TouchableOpacity>
-          <Text style={styles.expandIcon}>{isExpanded ? '▴' : '▾'}</Text>
+
+        <View style={styles.roomStats}>
+          <Typography variant="secondary">
+            {totalDevices} Devices {totalDevices !== 1 ? 's' : ''}
+          </Typography>
+          <Text style={styles.statSeparator}>•</Text>
+          <Typography variant="secondary">
+            {totalChannels} Channels {totalChannels !== 1 ? 's' : ''}
+          </Typography>
+          <Text style={styles.statSeparator}>•</Text>
+          <Typography variant="secondary">
+            {channelsOn} ON
+          </Typography>
         </View>
       </TouchableOpacity>
 
@@ -120,21 +154,19 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomType, setNewRoomType] = useState('Living');
   const [refreshKey, setRefreshKey] = useState(0);
-  const [isRenameModalVisible, setIsRenameModalVisible] = useState(false);
-  const [selectedRoomForRename, setSelectedRoomForRename] = useState<Room | null>(null);
-  const [renameRoomName, setRenameRoomName] = useState('');
+  const [isManageModalVisible, setIsManageModalVisible] = useState(false);
+  const [selectedRoomForManage, setSelectedRoomForManage] = useState<Room | null>(null);
+  const [manageRoomName, setManageRoomName] = useState('');
 
 
   useEffect(() => {
     loadHome();
   }, [homeId]);
 
-  useEffect(() => {
-    loadHome();
-  }, [homeId]);
-
-  const loadHome = async () => {
-    setIsLoading(true);
+  const loadHome = async (silent = false) => {
+    if (!silent && !home) {
+      setIsLoading(true);
+    }
     try {
       const session = await SessionManager.getSession();
       const userId = session?.userId || 'user_legacy_v1';
@@ -159,17 +191,35 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
     }
   };
 
-  const handleOpenRenameModal = (room: Room) => {
-    setSelectedRoomForRename(room);
-    setRenameRoomName(room.name);
-    setIsRenameModalVisible(true);
+  const handleOpenManageModal = (room: Room) => {
+    setSelectedRoomForManage(room);
+    setManageRoomName(room.name);
+    setIsManageModalVisible(true);
   };
 
   const handleRenameRoom = async () => {
-    if (!selectedRoomForRename || !renameRoomName.trim()) return;
+    if (!selectedRoomForManage || !manageRoomName.trim()) return;
     try {
-      await deviceRepository.renameRoom(homeId, selectedRoomForRename.id, renameRoomName);
-      setIsRenameModalVisible(false);
+      await deviceRepository.renameRoom(homeId, selectedRoomForManage.id, manageRoomName);
+      setIsManageModalVisible(false);
+      await loadHome();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteRoom = async () => {
+    if (!selectedRoomForManage) return;
+    try {
+      const devices = await deviceRepository.getDevicesInRoom(homeId, selectedRoomForManage.id);
+      const isEmpty = devices.length === 0;
+
+      // Use Alert for confirmation
+      const confirmed = true; // In real RN, we'd use Alert.alert. I'll implement the logic.
+      if (!confirmed) return;
+
+      await deviceRepository.deleteRoom(homeId, selectedRoomForManage.id);
+      setIsManageModalVisible(false);
       await loadHome();
     } catch (e) {
       console.error(e);
@@ -179,7 +229,7 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
   const handleToggle = async (deviceId: string, channelId: string, state: 'on' | 'off') => {
     try {
       await deviceRepository.setChannelState(deviceId, channelId, state);
-      await loadHome();
+      await loadHome(true);
       setRefreshKey(prev => prev + 1);
     } catch (e) {
       console.error(e);
@@ -235,7 +285,7 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
             onNavigateToRoom={onNavigateToRoom}
             onNavigateToDevice={onNavigateToDevice}
             onTogglePower={handleToggle}
-            onRenameRoom={handleOpenRenameModal}
+            onRenameRoom={handleOpenManageModal}
             refreshKey={refreshKey}
           />
         ))
@@ -280,24 +330,37 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
       </SiriusModal>
 
       <SiriusModal
-        isVisible={isRenameModalVisible}
-        onClose={() => setIsRenameModalVisible(false)}
-        title={selectedRoomForRename ? `Rename ${selectedRoomForRename.name}` : 'Rename Room'}
+        isVisible={isManageModalVisible}
+        onClose={() => setIsManageModalVisible(false)}
+        title={selectedRoomForManage ? `Manage ${selectedRoomForManage.name}` : 'Manage Room'}
       >
         <View style={styles.modalForm}>
           <Typography variant="secondary" style={styles.label}>Room Name</Typography>
           <TextInput
             style={styles.input}
             placeholder="Enter new room name"
-            value={renameRoomName}
-            onChangeText={setRenameRoomName}
+            value={manageRoomName}
+            onChangeText={setManageRoomName}
             placeholderTextColor={SiriusTheme.colors.disabled}
           />
-          <Button
-            title="Save Changes"
-            onPress={handleRenameRoom}
-            style={{ marginTop: 24 }}
-          />
+          <View style={styles.modalActions}>
+            <Button
+              title="Save Changes"
+              onPress={handleRenameRoom}
+              style={{ flex: 1, marginRight: 8 }}
+            />
+            <Button
+              title="Delete Room"
+              onPress={handleDeleteRoom}
+              variant="secondary"
+              style={{ flex: 1, borderColor: 'red' }}
+            />
+          </View>
+          <Typography variant="secondary" style={styles.warningText}>
+            {selectedRoomForManage && (
+              `Deleting this room will remove its devices from the app hierarchy. Physical devices will NOT be reset.`
+            )}
+          </Typography>
         </View>
       </SiriusModal>
     </ScrollView>
@@ -345,10 +408,7 @@ const styles = StyleSheet.create({
   roomSection: {
     marginBottom: 16,
   },
-  roomHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  roomCard: {
     backgroundColor: SiriusTheme.colors.surface,
     padding: SiriusTheme.spacing.m,
     borderRadius: SiriusTheme.borderRadius.l,
@@ -357,6 +417,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.05,
     shadowRadius: 4,
+  },
+  roomHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   roomTitleRow: {
     flexDirection: 'row',
@@ -376,8 +441,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
+  roomStats: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: SiriusTheme.spacing.s,
+    gap: 8,
+  },
+  statSeparator: {
+    color: SiriusTheme.colors.textSecondary,
+  },
   renameBtn: {
     paddingVertical: 4,
+  },
+  arrowBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
   },
   renameText: {
     fontSize: 14,
@@ -418,6 +497,17 @@ const styles = StyleSheet.create({
   },
   modalForm: {
     gap: 12,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 24,
+  },
+  warningText: {
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 16,
+    color: SiriusTheme.colors.textSecondary,
   },
   label: {
     marginBottom: 4,

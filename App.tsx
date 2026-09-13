@@ -99,6 +99,7 @@ const App = () => {
               />
             ) : screen === 'room' ? (
               <RoomView
+                homeId={selectedHomeId || ''}
                 roomId={selectedRoomId || ''}
                 onBack={() => setScreen('home')}
                 onNavigateToDevice={navigateToDevice}
@@ -112,8 +113,8 @@ const App = () => {
             ) : screen === 'provisioning' ? (
               <ProvisioningScreen
                 roomId={selectedRoomId || ''}
-                                    onComplete={() => setScreen('room')}
-                    onBack={() => selectedRoomId ? setScreen('room') : setScreen('home')}
+                onComplete={() => setScreen('room')}
+                onBack={() => selectedRoomId ? setScreen('room') : setScreen('home')}
               />
             ) : screen === 'automations' ? (
               <AutomationsScreen />

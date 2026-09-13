@@ -8,6 +8,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  PermissionsAndroid,
 } from 'react-native';
 import { NativeModules } from 'react-native';
 import { Typography, Box, Button, SiriusModal } from '../components/common/UI';
@@ -19,17 +20,23 @@ import SessionManager from '../api/session/SessionManager';
 
 const { WifiProvisioningModule, DeviceDiscoveryModule } = NativeModules;
 
-type ProvisioningStep = 'INPUT' | 'CONNECTING_SOFTAP' | 'SENDING_CREDENTIALS' | 'WAITING_RECONNECT' | 'CONFIRM_IDENTITY' | 'NAME_DEVICE' | 'FINALIZING' | 'SUCCESS' | 'FAILED';
+type ProvisioningStep = 'INPUT' | 'REQUESTING_PERMISSIONS' | 'DISCOVERING' | 'SELECTING_DEVICE' | 'CONNECTING_SOFTAP' | 'SENDING_CREDENTIALS' | 'WAITING_RECONNECT' | 'CONFIRM_IDENTITY' | 'NAME_DEVICE' | 'FINALIZING' | 'SUCCESS' | 'FAILED';
 
 const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, onComplete?: () => void, onBack?: () => void }) => {
   const [ssid, setSsid] = useState('');
   const [pass, setPass] = useState('');
   const [step, setStep] = useState<ProvisioningStep>('INPUT');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [discoveredSSIDs, setDiscoveredSSIDs] = useState<string[]>([]);
+  const [selectedSsid, setSelectedSsid] = useState<string | null>(null);
   const [discoveredDevice, setDiscoveredDevice] = useState<{ ip: string, id: string } | null>(null);
   const [deviceName, setDeviceName] = useState('');
 
-  const SOFTAP_SSID = 'AION_Prototype_ESP32';
+  const SIRIUS_PRODUCT_SSIDS = [
+    'Sirius_1CH_Switch',
+    'Sirius_2CH_Switch',
+    'Sirius_3CH_Switch',
+  ];
   const SOFTAP_IP = '192.168.4.1';
   const SOFTAP_PASS = '';
   const TARGET_SERVICE_TYPE = '_http._tcp';
@@ -43,13 +50,53 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
 
     setErrorMessage(null);
     setDiscoveredDevice(null);
+    setSelectedSsid(null);
 
     try {
-      // Step 1: Connect to SoftAP
-      setStep('CONNECTING_SOFTAP');
-      await WifiProvisioningModule.connectToSoftAP(SOFTAP_SSID, SOFTAP_PASS);
+      // Step 1: Permissions
+      setStep('REQUESTING_PERMISSIONS');
+      const results = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.NEARBY_WIFI_DEVICES,
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      ]);
 
-      // Step 2: Send credentials
+      if (
+        results[PermissionsAndroid.PERMISSIONS.NEARBY_WIFI_DEVICES] !== PermissionsAndroid.RESULTS.GRANTED ||
+        results[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION] !== PermissionsAndroid.RESULTS.GRANTED
+      ) {
+        throw new Error('NEARBY_WIFI_DEVICES and ACCESS_FINE_LOCATION permissions are required to discover Sirius devices.');
+      }
+
+      // Step 2: Discover SoftAPs
+      setStep('DISCOVERING');
+      const ssids = await WifiProvisioningModule.discoverSoftAPs();
+      setDiscoveredSSIDs(ssids);
+
+      if (ssids.length === 0) {
+        throw new Error('No Sirius devices found nearby. Please ensure the device is in provisioning mode.');
+      }
+
+      if (ssids.length === 1) {
+        const targetSsid = ssids[0];
+        setSelectedSsid(targetSsid);
+        await proceedToConnection(targetSsid);
+      } else {
+        setStep('SELECTING_DEVICE');
+      }
+
+    } catch (e: any) {
+      console.error(`Provisioning Error: ${e.message}`);
+      setErrorMessage(e.message || 'An unexpected error occurred');
+      setStep('FAILED');
+    }
+  };
+
+  const proceedToConnection = async (targetSsid: string) => {
+    try {
+      setStep('CONNECTING_SOFTAP');
+      await WifiProvisioningModule.connectToSoftAP(targetSsid, SOFTAP_PASS);
+
+      // Step 3: Send credentials
       setStep('SENDING_CREDENTIALS');
       const provisionResult = await apiClient.provision(SOFTAP_IP, ssid, pass);
 
@@ -58,13 +105,12 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
          throw new Error(`Provisioning rejected: ${provisionResult.status}`);
       }
 
-      // Step 3: Disconnect from SoftAP immediately
+      // Step 4: Disconnect from SoftAP immediately
       await WifiProvisioningModule.disconnectFromSoftAP();
 
-      // Step 4: Wait for reconnection and verify device via NSD
+      // Step 5: Wait for reconnection and verify device via NSD
       setStep('WAITING_RECONNECT');
 
-      // Give the Android device a few seconds to switch back to Home Wi-Fi
       await new Promise(resolve => setTimeout(() => resolve(true), 5000));
 
       let attempts = 0;
@@ -82,13 +128,26 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
           console.log(`Provisioning: Found device at ${host}, verifying identity...`);
           const info = await apiClient.getInfo(host);
 
-          if (info.id === TARGET_FACTORY_ID) {
+          // STRICT IDENTITY VALIDATION
+          // 1. Derive expected ID from SSID if it follows the generic 'Sirius_<ID>' pattern
+          // 2. Otherwise, use the TARGET_FACTORY_ID for legacy/product-specific SSIDs
+          let expectedId = TARGET_FACTORY_ID;
+          if (selectedSsid && selectedSsid.startsWith('Sirius_') && selectedSsid !== 'Sirius_1CH_Switch' && selectedSsid !== 'Sirius_2CH_Switch' && selectedSsid !== 'Sirius_3CH_Switch') {
+            const idPart = selectedSsid.replace('Sirius_', '').toUpperCase();
+            // Convert MAC string (e.g. 80F3DA5E1BEC) to canonical Factory ID (e.g. ESP32-80:f3:da:5e:1b:ec)
+            if (idPart.length === 12) {
+              const mac = idPart.match(/.{1,2}/g)?.join(':').toLowerCase();
+              expectedId = `ESP32-${mac}`;
+            }
+          }
+
+          if (info.id === expectedId) {
             console.log(`Provisioning: Device identity verified: ${info.id}`);
             setDiscoveredDevice({ ip: host, id: info.id });
             deviceVerified = true;
             break;
           } else {
-            console.log(`Provisioning: Device found but ID mismatch. Expected ${TARGET_FACTORY_ID}, got ${info.id}`);
+            console.log(`Provisioning: Identity mismatch. Expected ${expectedId}, got ${info.id}`);
           }
         } catch (e: any) {
           console.log(`Provisioning: Discovery/Verification failed: ${e.message}`);
@@ -105,7 +164,7 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
       setStep('CONFIRM_IDENTITY');
 
     } catch (e: any) {
-      console.error(`Provisioning Error: ${e.message}`);
+      console.error(`Provisioning Connection Error: ${e.message}`);
       setErrorMessage(e.message || 'An unexpected error occurred');
       setStep('FAILED');
     }
@@ -134,6 +193,11 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
     }
   };
 
+  const handleSelectDevice = async (ssid: string) => {
+    setSelectedSsid(ssid);
+    await proceedToConnection(ssid);
+  };
+
   const renderStep = () => {
     switch (step) {
       case 'INPUT':
@@ -160,8 +224,30 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
             </TouchableOpacity>
           </View>
         );
+      case 'REQUESTING_PERMISSIONS':
+        return <StatusView label="Requesting Wi-Fi permissions..." />;
+      case 'DISCOVERING':
+        return <StatusView label="Scanning for nearby Sirius devices..." />;
+      case 'SELECTING_DEVICE':
+        return (
+          <View style={styles.section}>
+            <Text style={styles.label}>Select Sirius Device</Text>
+            {discoveredSSIDs.map((s, i) => (
+              <TouchableOpacity
+                key={i}
+                style={styles.deviceOption}
+                onPress={() => handleSelectDevice(s)}
+              >
+                <Text style={styles.deviceOptionText}>{s}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={[styles.button, { backgroundColor: '#666', marginTop: 20 }]} onPress={() => setStep('INPUT')}>
+              <Text style={styles.buttonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        );
       case 'CONNECTING_SOFTAP':
-        return <StatusView label="Connecting to ESP32 SoftAP..." />;
+        return <StatusView label={`Connecting to ${selectedSsid || 'device'}...`} />;
       case 'SENDING_CREDENTIALS':
         return <StatusView label="Sending Wi-Fi credentials..." />;
       case 'WAITING_RECONNECT':
@@ -264,6 +350,21 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 24, fontWeight: 'bold', textAlign: 'center', color: '#333' },
   section: { backgroundColor: '#fff', padding: 20, borderRadius: 10, elevation: 3, alignItems: 'center' },
+  deviceOption: {
+    backgroundColor: '#f9f9f9',
+    padding: 15,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    marginBottom: 10,
+    width: '100%',
+    alignItems: 'center',
+  },
+  deviceOptionText: {
+    fontSize: 16,
+    color: '#333',
+    fontWeight: '500',
+  },
   label: { fontSize: 14, color: '#666', marginBottom: 5, alignSelf: 'flex-start' },
   input: { borderWidth: 1, borderColor: '#ddd', padding: 10, borderRadius: 5, fontSize: 16, marginBottom: 15, width: '100%' },
   button: { backgroundColor: '#007AFF', padding: 12, borderRadius: 5, alignItems: 'center', width: '100%', marginTop: 10 },

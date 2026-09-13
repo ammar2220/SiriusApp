@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   TextInput,
+  Text,
 } from 'react-native';
 import { Typography, Box, Button, SiriusModal } from '../../components/common/UI';
 import { DeviceCard } from '../../components/devices/DeviceCard';
@@ -15,23 +16,48 @@ import SessionManager from '../../api/session/SessionManager';
 import { SiriusDevice, Room } from '../../types/home';
 
 interface RoomViewProps {
+  homeId: string;
   roomId: string;
   onBack: () => void;
   onNavigateToDevice: (deviceId: string) => void;
   onNavigateToProvisioning: (roomId: string) => void;
 }
 
-const RoomView = ({ roomId, onBack, onNavigateToDevice, onNavigateToProvisioning }: RoomViewProps) => {
+const RoomView = ({ homeId, roomId, onBack, onNavigateToDevice, onNavigateToProvisioning }: RoomViewProps) => {
   const [room, setRoom] = useState<Room | null>(null);
   const [devices, setDevices] = useState<SiriusDevice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isManageModalVisible, setIsManageModalVisible] = useState(false);
+  const [manageRoomName, setManageRoomName] = useState('');
+
+  // Log render values on every render
+  console.log('[ROOM-RENDER]', {
+    roomId,
+    homeId,
+    isLoading,
+    isRefreshing,
+    deviceCount: devices.length
+  });
 
   useEffect(() => {
+    console.log('[ROOM-LIFECYCLE] MOUNT', { homeId, roomId });
     loadRoomData();
-  }, [roomId]);
+    return () => {
+      console.log('[ROOM-LIFECYCLE] UNMOUNT', { homeId, roomId });
+    };
+  }, [homeId, roomId]);
 
-  const loadRoomData = async () => {
-    setIsLoading(true);
+  const loadRoomData = async (silent = false) => {
+    console.log(`[RoomView] loadRoomData START. silent: ${silent}, roomExists: ${!!room}, isLoading: ${isLoading}, isRefreshing: ${isRefreshing}`);
+
+    // Only trigger full-screen loading if explicitly requested AND no room data is currently displayed
+    if (!silent && !room) {
+      setIsLoading(true);
+    } else {
+      setIsRefreshing(true);
+    }
+
     try {
       const session = await SessionManager.getSession();
       const userId = session?.userId || 'user_legacy_v1';
@@ -41,27 +67,80 @@ const RoomView = ({ roomId, onBack, onNavigateToDevice, onNavigateToProvisioning
         const roomData = home.rooms.find(r => r.id === roomId);
         if (roomData) {
           setRoom(roomData);
-          const devicesData = await deviceRepository.getDevicesInRoom(home.id, roomId);
+          const devicesData = await deviceRepository.getDevicesInRoom(homeId, roomId);
           setDevices(devicesData);
         }
       }
     } catch (e) {
-      console.error(e);
+      console.error(`[RoomView] loadRoomData ERROR:`, e);
     } finally {
       setIsLoading(false);
+      setIsRefreshing(false);
+      console.log(`[RoomView] loadRoomData END.`);
     }
   };
 
   const handleToggle = async (deviceId: string, channelId: string, state: 'on' | 'off') => {
+    console.log(`[RoomView] handleToggle START. deviceId: ${deviceId}, channelId: ${channelId}, nextState: ${state}`);
+
+    // Optimistically update the UI state immediately
+    setDevices(prevDevices => prevDevices.map(device => {
+      if (device.factoryId === deviceId) {
+        return {
+          ...device,
+          channels: device.channels.map(ch =>
+            ch.id === channelId ? { ...ch, state } : ch
+          ),
+          // Update overall powerState based on updated channels
+          powerState: device.channels.map(ch =>
+            ch.id === channelId ? state : ch.state
+          ).every(s => s === 'on') ? 'on' :
+                     device.channels.map(ch =>
+                        ch.id === channelId ? state : ch.state
+                     ).every(s => s === 'off') ? 'off' : 'unknown'
+        };
+      }
+      return device;
+    }));
+
     try {
       await deviceRepository.setChannelState(deviceId, channelId, state);
-      const session = await SessionManager.getSession();
-      const userId = session?.userId || 'user_legacy_v1';
-      const homes = await deviceRepository.getHomes(userId);
-      const home = homes.find(h => h.rooms.some(r => r.id === roomId));
-      const homeId = home?.id || '';
+      console.log(`[RoomView] setChannelState SUCCESS. Refreshing state in background...`);
+
+      // Refresh the state in the background to ensure sync with server
       const updatedDevices = await deviceRepository.getDevicesInRoom(homeId, roomId);
       setDevices(updatedDevices);
+      console.log(`[RoomView] Background refresh complete. handleToggle END.`);
+    } catch (e) {
+      console.error(`[RoomView] handleToggle ERROR:`, e);
+      // Rollback optimistic update on error
+      await loadRoomData(true);
+    }
+  };
+
+  const handleOpenManageModal = () => {
+    if (!room) return;
+    setManageRoomName(room.name);
+    setIsManageModalVisible(true);
+  };
+
+  const handleRenameRoom = async () => {
+    if (!room || !manageRoomName.trim()) return;
+    try {
+      await deviceRepository.renameRoom(homeId, room.id, manageRoomName);
+      setIsManageModalVisible(false);
+      await loadRoomData();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteRoom = async () => {
+    if (!room) return;
+    try {
+      await deviceRepository.deleteRoom(homeId, room.id);
+      setIsManageModalVisible(false);
+      onBack();
     } catch (e) {
       console.error(e);
     }
@@ -91,7 +170,12 @@ const RoomView = ({ roomId, onBack, onNavigateToDevice, onNavigateToProvisioning
           <Typography variant="secondary">← Back</Typography>
         </TouchableOpacity>
         <Typography variant="screenTitle">{room.name}</Typography>
-        <View style={{ width: 50 }} />
+        <TouchableOpacity
+          style={styles.manageBtn}
+          onPress={handleOpenManageModal}
+        >
+          <Text style={{ fontSize: 20 }}>⚙️</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -118,6 +202,40 @@ const RoomView = ({ roomId, onBack, onNavigateToDevice, onNavigateToProvisioning
           style={styles.addDeviceBtn}
         />
       </ScrollView>
+      <SiriusModal
+        isVisible={isManageModalVisible}
+        onClose={() => setIsManageModalVisible(false)}
+        title={room ? `Manage ${room.name}` : 'Manage Room'}
+      >
+        <View style={styles.modalForm}>
+          <Typography variant="secondary" style={styles.label}>Room Name</Typography>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter room name"
+            value={manageRoomName}
+            onChangeText={setManageRoomName}
+            placeholderTextColor={SiriusTheme.colors.disabled}
+          />
+          <View style={styles.modalActions}>
+            <Button
+              title="Save Changes"
+              onPress={handleRenameRoom}
+              style={{ flex: 1, marginRight: 8 }}
+            />
+            <Button
+              title="Delete Room"
+              onPress={handleDeleteRoom}
+              variant="secondary"
+              style={{ flex: 1, borderColor: 'red' }}
+            />
+          </View>
+          <Typography variant="secondary" style={styles.warningText}>
+            {devices.length === 0
+              ? 'Deleting a room will remove it from the app.'
+              : `Deleting this room will remove ${devices.length} device(s) from the app hierarchy. Physical devices will NOT be reset.`}
+          </Typography>
+        </View>
+      </SiriusModal>
     </View>
   );
 };
@@ -144,6 +262,19 @@ const styles = StyleSheet.create({
   backBtn: {
     padding: 8,
   },
+  manageBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: SiriusTheme.colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
   scrollContent: {
     padding: SiriusTheme.spacing.l,
     paddingBottom: 40,
@@ -165,6 +296,31 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: SiriusTheme.colors.primary,
     marginTop: 24,
+  },
+  modalForm: {
+    gap: 12,
+  },
+  label: {
+    marginBottom: 4,
+  },
+  input: {
+    backgroundColor: SiriusTheme.colors.surface,
+    borderRadius: SiriusTheme.borderRadius.m,
+    padding: SiriusTheme.spacing.m,
+    borderWidth: 1,
+    borderColor: SiriusTheme.colors.disabled,
+    color: SiriusTheme.colors.textPrimary,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 24,
+  },
+  warningText: {
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 16,
+    color: SiriusTheme.colors.textSecondary,
   },
 });
 

@@ -101,6 +101,29 @@ class MockDeviceRepository implements DeviceRepository {
     await this.save();
   }
 
+  async deleteRoom(homeId: string, roomId: string): Promise<void> {
+    const home = this.homes.find(h => h.id === homeId);
+    if (!home) throw new Error('Home not found');
+
+    const roomIndex = home.rooms.findIndex(r => r.id === roomId);
+    if (roomIndex === -1) throw new Error('Room not found');
+
+    home.rooms.splice(roomIndex, 1);
+
+    const devicesToRemove: string[] = [];
+    for (const [id, device] of Object.entries(this.devices)) {
+      if (device.roomId === roomId) {
+        devicesToRemove.push(id);
+      }
+    }
+
+    devicesToRemove.forEach(id => {
+      delete this.devices[id];
+    });
+
+    await this.save();
+  }
+
 
   async addRoom(homeId: string, name: string, type: string): Promise<Room> {
     const home = this.homes.find(h => h.id === homeId);
@@ -135,6 +158,17 @@ class MockDeviceRepository implements DeviceRepository {
     return { ...device };
   }
 
+  async findRoomForDevice(deviceId: string): Promise<{ roomId: string, homeId: string } | null> {
+    for (const home of this.homes) {
+      for (const room of home.rooms) {
+        if (room.devices.includes(deviceId)) {
+          return { roomId: room.id, homeId: home.id };
+        }
+      }
+    }
+    return null;
+  }
+
   async getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]> {
     const home = this.homes.find(h => h.id === homeId);
     if (!home) throw new Error('Home not found');
@@ -142,7 +176,7 @@ class MockDeviceRepository implements DeviceRepository {
     const room = home.rooms.find(r => r.id === roomId);
     if (!room) throw new Error('Room not found in home');
 
-    return Object.values(this.devices).filter(d => d.roomId === roomId && d.homeId === homeId);
+    return Object.values(this.devices).filter(d => room.devices.includes(d.factoryId));
   }
 
   async addDevice(homeId: string, roomId: string, name: string, ip?: string): Promise<SiriusDevice> {
@@ -199,17 +233,24 @@ class MockDeviceRepository implements DeviceRepository {
 
   async removeDevice(deviceId: string): Promise<void> {
     const device = this.devices[deviceId];
-    if (!device) throw new Error('Device not found');
 
-    const roomId = device.roomId;
-    delete this.devices[deviceId];
+    if (device) {
+      delete this.devices[deviceId];
 
-    // Remove from room list
-    const home = this.homes.find(h => h.rooms.some(r => r.id === roomId));
-    if (home) {
-      const room = home.rooms.find(r => r.id === roomId);
-      if (room) {
-        room.devices = room.devices.filter(id => id !== deviceId);
+      const roomId = device.roomId;
+      const home = this.homes.find(h => h.rooms.some(r => r.id === roomId));
+      if (home) {
+        const room = home.rooms.find(r => r.id === roomId);
+        if (room) {
+          room.devices = room.devices.filter(id => id !== deviceId);
+        }
+      }
+    } else {
+      // Physical device may exist only in the Room hierarchy.
+      for (const home of this.homes) {
+        for (const room of home.rooms) {
+          room.devices = room.devices.filter(id => id !== deviceId);
+        }
       }
     }
 
@@ -227,35 +268,42 @@ class MockDeviceRepository implements DeviceRepository {
   }
 
   async moveDevice(deviceId: string, newRoomId: string, newHomeId: string): Promise<void> {
-    const device = this.devices[deviceId];
-    if (!device) throw new Error('Device not found');
-
-    const oldRoomId = device.roomId;
-    if (oldRoomId === newRoomId) return;
-
-    // Remove from old room
-    const homeOld = this.homes.find(h => h.rooms.some(r => r.id === oldRoomId));
-    if (homeOld) {
-      const roomOld = homeOld.rooms.find(r => r.id === oldRoomId);
-      if (roomOld) {
-        roomOld.devices = roomOld.devices.filter(id => id !== deviceId);
+    // Remove from all rooms first
+    for (const home of this.homes) {
+      for (const room of home.rooms) {
+        if (room.devices.includes(deviceId)) {
+          room.devices = room.devices.filter(id => id !== deviceId);
+        }
       }
     }
 
     // Add to new room
     this.addDeviceToRoom(newRoomId, deviceId);
-    device.roomId = newRoomId;
-    device.homeId = newHomeId;
+
+    // Update logical device record if it exists
+    const device = this.devices[deviceId];
+    if (device) {
+      device.roomId = newRoomId;
+      device.homeId = newHomeId;
+    }
 
     await this.save();
   }
 
   async addDeviceToRoom(roomId: string, deviceId: string): Promise<void> {
-    const home = this.homes.find(h => h.rooms.some(r => r.id === roomId));
-    if (home) {
-      const room = home.rooms.find(r => r.id === roomId);
-      if (room && !room.devices.includes(deviceId)) {
-        room.devices.push(deviceId);
+    // 1. Prevent duplicate membership: Remove device from all rooms across all homes
+    for (const home of this.homes) {
+      for (const room of home.rooms) {
+        room.devices = room.devices.filter(id => id !== deviceId);
+      }
+    }
+
+    // 2. Add to the target room
+    const targetHome = this.homes.find(h => h.rooms.some(r => r.id === roomId));
+    if (targetHome) {
+      const targetRoom = targetHome.rooms.find(r => r.id === roomId);
+      if (targetRoom && !targetRoom.devices.includes(deviceId)) {
+        targetRoom.devices.push(deviceId);
         await this.save();
       }
     } else {
