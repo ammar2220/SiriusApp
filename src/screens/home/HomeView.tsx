@@ -81,11 +81,26 @@ const RoomSection = ({
         activeOpacity={0.7}
       >
         <View style={styles.roomHeader}>
-          <View style={styles.roomTitleRow}>
-            <View style={styles.roomIcon}>
-              <Text style={{ fontSize: 18 }}>🏠</Text>
+          <View style={styles.roomTitleContainer}>
+            <View style={styles.roomTitleRow}>
+              <View style={styles.roomIcon}>
+                <Text style={{ fontSize: 18 }}>🏠</Text>
+              </View>
+              <Typography variant="section">{room.name}</Typography>
             </View>
-            <Typography variant="section">{room.name}</Typography>
+            <View style={styles.roomStats}>
+              <Typography variant="secondary">
+                {totalDevices} Devices {totalDevices !== 1 ? 's' : ''}
+              </Typography>
+              <Text style={styles.statSeparator}>•</Text>
+              <Typography variant="secondary">
+                {totalChannels} Channels {totalChannels !== 1 ? 's' : ''}
+              </Typography>
+              <Text style={styles.statSeparator}>•</Text>
+              <Typography variant="secondary">
+                {channelsOn} ON
+              </Typography>
+            </View>
           </View>
           <View style={styles.roomActions}>
             <TouchableOpacity
@@ -107,20 +122,6 @@ const RoomSection = ({
               <Text style={styles.expandIcon}>→</Text>
             </TouchableOpacity>
           </View>
-        </View>
-
-        <View style={styles.roomStats}>
-          <Typography variant="secondary">
-            {totalDevices} Devices {totalDevices !== 1 ? 's' : ''}
-          </Typography>
-          <Text style={styles.statSeparator}>•</Text>
-          <Typography variant="secondary">
-            {totalChannels} Channels {totalChannels !== 1 ? 's' : ''}
-          </Typography>
-          <Text style={styles.statSeparator}>•</Text>
-          <Typography variant="secondary">
-            {channelsOn} ON
-          </Typography>
         </View>
       </TouchableOpacity>
 
@@ -431,6 +432,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  roomTitleContainer: {
+    flexDirection: 'column',
+    gap: 4,
+  },
   roomTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -451,10 +456,10 @@ const styles = StyleSheet.create({
   },
   roomStats: {
     flexDirection: 'row',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     alignItems: 'center',
-    marginTop: SiriusTheme.spacing.s,
     gap: 8,
+    marginLeft: 44, // Align with the text in roomTitleRow (icon is 32 + margin 12)
   },
   statSeparator: {
     color: SiriusTheme.colors.textSecondary,

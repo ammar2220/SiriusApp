@@ -3,6 +3,7 @@ import { Home, Room, SiriusDevice } from '../../types/home';
 import MockDeviceRepository from './MockDeviceRepository';
 import LocalEsp32DeviceRepository from './LocalEsp32DeviceRepository';
 import SessionManager from '../session/SessionManager';
+import persistentStorage from '../persistence/PersistentStorage';
 
 class CompositeDeviceRepository implements DeviceRepository {
   private mockRepo = MockDeviceRepository;
@@ -114,11 +115,22 @@ class CompositeDeviceRepository implements DeviceRepository {
 
   async addDevice(homeId: string, roomId: string, name: string, ip?: string): Promise<SiriusDevice> {
     if (ip) {
-      // 1. Register in local repository (returns device with factoryId as id)
+      // 1. Register in local repository in-memory state
       const device = await this.localRepo.addDevice(homeId, roomId, name, ip);
 
-      // 2. Link the physical device ID to the logical room in the mock hierarchy
+      // 2. Link the physical device ID to the logical room in the mock hierarchy in-memory state
       await this.mockRepo.addDeviceToRoom(roomId, device.factoryId);
+
+      // 3. Perform ONE atomic persistence write containing both updates.
+      // We obtain the current in-memory state from both repositories.
+      const physicalDevices = await this.localRepo.getPhysicalDevices();
+      const mockState = await this.mockRepo.getInternalState();
+
+      await persistentStorage.saveState({
+        physicalDevices,
+        homes: mockState.homes,
+        devices: mockState.devices,
+      });
 
       return device;
     }
@@ -140,7 +152,7 @@ class CompositeDeviceRepository implements DeviceRepository {
     try {
       return await this.localRepo.getState(deviceId);
     } catch {
-      return await this.mockRepo.getState(deviceId);
+      return await this.mockRepo.getDeviceState(deviceId);
     }
   }
 

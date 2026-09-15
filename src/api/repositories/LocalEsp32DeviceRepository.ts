@@ -24,7 +24,11 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
     }
   }
 
-  private async save() {
+  async getPhysicalDevices(): Promise<Record<string, { ip: string, name: string }>> {
+    return { ...this.deviceMap };
+  }
+
+  async save() {
     await persistentStorage.saveState({
       physicalDevices: this.deviceMap,
     });
@@ -155,20 +159,20 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
   }
 
   async getDevice(id: string): Promise<SiriusDevice> {
-    const config = this.deviceMap[id];
-    if (!config) throw new Error('Device not found');
-
-    try {
-      const data = await this._fetchDeviceData(config.ip);
+    return this.executeWithRecovery(id, async (ip) => {
+      const data = await this._fetchDeviceData(ip);
+      const config = this.deviceMap[id];
       return {
         ...data,
-        displayName: config.name,
+        displayName: config?.name || '',
       };
-    } catch (e) {
+    }).catch(async (e) => {
+      // If recovery also fails, return the offline fallback object
+      const config = this.deviceMap[id];
       return {
         factoryId: id,
-        displayName: config.name,
-        ipAddress: config.ip,
+        displayName: config?.name || 'Unknown Device',
+        ipAddress: config?.ip || 'unknown',
         powerState: 'unknown',
         rssi: 0,
         connectionStatus: 'offline',
@@ -184,7 +188,7 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
         },
         channels: [{ id: 'ch-1', index: 1, name: 'Main', state: 'unknown', capabilities: ['switch'] }],
       };
-    }
+    });
   }
 
   async getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]> {
@@ -203,7 +207,8 @@ class LocalEsp32DeviceRepository implements DeviceRepository {
         name,
       };
 
-      await this.save();
+      // REMOVED: await this.save();
+      // Saving is now handled by the Composite repository to avoid race conditions.
 
       return this.getDevice(factoryId);
     } catch (e: any) {

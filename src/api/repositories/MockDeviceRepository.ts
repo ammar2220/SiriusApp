@@ -169,6 +169,21 @@ class MockDeviceRepository implements DeviceRepository {
     return null;
   }
 
+  async getState(deviceId: string): Promise<SiriusDevice> {
+    return this.getDevice(deviceId);
+  }
+
+  // Internal state helper for coordinated persistence
+  async getInternalState() {
+    return {
+      homes: JSON.parse(JSON.stringify(this.homes)),
+      devices: Object.entries(this.devices).map(([id, device]) => ({
+        ...device,
+        id,
+      })),
+    };
+  }
+
   async getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]> {
     const home = this.homes.find(h => h.id === homeId);
     if (!home) throw new Error('Home not found');
@@ -304,7 +319,8 @@ class MockDeviceRepository implements DeviceRepository {
       const targetRoom = targetHome.rooms.find(r => r.id === roomId);
       if (targetRoom && !targetRoom.devices.includes(deviceId)) {
         targetRoom.devices.push(deviceId);
-        await this.save();
+        // REMOVED: await this.save();
+        // Saving is now coordinated by CompositeDeviceRepository during physical device addition
       }
     } else {
       throw new Error(`Room ${roomId} not found in any home`);
@@ -325,7 +341,7 @@ class MockDeviceRepository implements DeviceRepository {
     return { success: true, newState: state };
   }
 
-  async getState(deviceId: string): Promise<SiriusDevice> {
+  async getDeviceState(deviceId: string): Promise<SiriusDevice> {
     return this.getDevice(deviceId);
   }
 }

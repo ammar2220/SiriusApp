@@ -40,7 +40,6 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
   const SOFTAP_IP = '192.168.4.1';
   const SOFTAP_PASS = '';
   const TARGET_SERVICE_TYPE = '_http._tcp';
-  const TARGET_FACTORY_ID = 'ESP32-80:f3:da:5e:1b:ec';
 
   const runProvisioningFlow = async () => {
     if (!ssid || !pass) {
@@ -128,26 +127,23 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
           console.log(`Provisioning: Found device at ${host}, verifying identity...`);
           const info = await apiClient.getInfo(host);
 
-          // STRICT IDENTITY VALIDATION
-          // 1. Derive expected ID from SSID if it follows the generic 'Sirius_<ID>' pattern
-          // 2. Otherwise, use the TARGET_FACTORY_ID for legacy/product-specific SSIDs
-          let expectedId = TARGET_FACTORY_ID;
-          if (selectedSsid && selectedSsid.startsWith('Sirius_') && selectedSsid !== 'Sirius_1CH_Switch' && selectedSsid !== 'Sirius_2CH_Switch' && selectedSsid !== 'Sirius_3CH_Switch') {
-            const idPart = selectedSsid.replace('Sirius_', '').toUpperCase();
-            // Convert MAC string (e.g. 80F3DA5E1BEC) to canonical Factory ID (e.g. ESP32-80:f3:da:5e:1b:ec)
-            if (idPart.length === 12) {
-              const mac = idPart.match(/.{1,2}/g)?.join(':').toLowerCase();
-              expectedId = `ESP32-${mac}`;
-            }
-          }
-
-          if (info.id === expectedId) {
+          // SIRIUS DEVICE VALIDATION
+          // A valid Sirius device must provide:
+          // 1. A Factory ID starting with 'ESP32-'
+          // 2. A product type starting with 'SIRIUS_'
+          // 3. A valid channel count and channels array
+          if (
+            info.id?.startsWith('ESP32-') &&
+            info.productType?.startsWith('SIRIUS_') &&
+            typeof info.channelCount === 'number' &&
+            Array.isArray(info.channels)
+          ) {
             console.log(`Provisioning: Device identity verified: ${info.id}`);
             setDiscoveredDevice({ ip: host, id: info.id });
             deviceVerified = true;
             break;
           } else {
-            console.log(`Provisioning: Identity mismatch. Expected ${expectedId}, got ${info.id}`);
+            console.log(`Provisioning: Device rejected. Invalid Sirius identity format. Received ID: ${info.id}`);
           }
         } catch (e: any) {
           console.log(`Provisioning: Discovery/Verification failed: ${e.message}`);

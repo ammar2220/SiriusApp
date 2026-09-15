@@ -1,6 +1,12 @@
 export interface DeviceInfo {
   id: string;
   ver: string;
+  productType: string;
+  channelCount: number;
+  channels: Array<{
+    index: number;
+    state: 'on' | 'off';
+  }>;
 }
 
 export interface DeviceState {
