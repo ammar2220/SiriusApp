@@ -180,7 +180,7 @@ const ProvisioningScreen = ({ roomId, onComplete, onBack }: { roomId: string, on
     try {
       const session = await SessionManager.getSession();
       const homeId = session?.activeHomeId || '';
-      await deviceRepository.addDevice(homeId, roomId, deviceName, discoveredDevice?.ip);
+      await deviceRepository.addDevice(roomId, deviceName, discoveredDevice?.ip);
       setStep('SUCCESS');
     } catch (e: any) {
       console.error(`Save Device Error: ${e.message}`);
@@ -343,7 +343,7 @@ const styles = StyleSheet.create({
     padding: 8,
     width: 60,
   },
-  title: { fontSize: 24, fontWeight: 'bold', textAlign: 'center', color: '#333' },
+  title: { fontSize: 24, fontWeight: 'bold', textAlign: 'center', color: '#333', flex: 1 },
   section: { backgroundColor: '#fff', padding: 20, borderRadius: 10, elevation: 3, alignItems: 'center' },
   deviceOption: {
     backgroundColor: '#f9f9f9',
@@ -361,7 +361,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   label: { fontSize: 14, color: '#666', marginBottom: 5, alignSelf: 'flex-start' },
-  input: { borderWidth: 1, borderColor: '#ddd', padding: 10, borderRadius: 5, fontSize: 16, marginBottom: 15, width: '100%' },
+  input: { borderWidth: 1, borderColor: '#ddd', padding: 10, borderRadius: 5, fontSize: 16, marginBottom: 15, width: '100%', color: SiriusTheme.colors.textPrimary },
   button: { backgroundColor: '#007AFF', padding: 12, borderRadius: 5, alignItems: 'center', width: '100%', marginTop: 10 },
   buttonText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
   statusText: { fontSize: 16, textAlign: 'center', color: '#333' },

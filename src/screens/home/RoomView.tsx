@@ -14,6 +14,7 @@ import { SiriusTheme } from '../../constants/theme';
 import deviceRepository from '../../api/repositories/CompositeDeviceRepository';
 import SessionManager from '../../api/session/SessionManager';
 import { SiriusDevice, Room } from '../../types/home';
+import LocalEsp32DeviceRepository from '../../api/repositories/LocalEsp32DeviceRepository';
 
 interface RoomViewProps {
   homeId: string;
@@ -44,8 +45,18 @@ const RoomView = ({ homeId, roomId, onBack, onNavigateToDevice, onNavigateToProv
   useEffect(() => {
     console.log('[ROOM-LIFECYCLE] MOUNT', { homeId, roomId });
     loadRoomData();
+
+    // Subscribe to real-time updates for devices in this room
+    const unsubscribe = LocalEsp32DeviceRepository.onDeviceUpdate((updatedDevice) => {
+      console.log(`[RoomView-Trace] Received update for ${updatedDevice.factoryId}: Status=${updatedDevice.connectionStatus}, Rev=${updatedDevice.revision}`);
+      setDevices(prevDevices => prevDevices.map(device =>
+        device.factoryId === updatedDevice.factoryId ? updatedDevice : device
+      ));
+    });
+
     return () => {
       console.log('[ROOM-LIFECYCLE] UNMOUNT', { homeId, roomId });
+      unsubscribe();
     };
   }, [homeId, roomId]);
 
@@ -60,9 +71,7 @@ const RoomView = ({ homeId, roomId, onBack, onNavigateToDevice, onNavigateToProv
     setError(null);
 
     try {
-      const session = await SessionManager.getSession();
-      const userId = session?.userId || 'user_legacy_v1';
-      const homes = await deviceRepository.getHomes(userId);
+      const homes = await deviceRepository.getHomes();
       const home = homes.find(h => h.rooms.some(r => r.id === roomId));
       if (home) {
         const roomData = home.rooms.find(r => r.id === roomId);
@@ -110,13 +119,22 @@ const RoomView = ({ homeId, roomId, onBack, onNavigateToDevice, onNavigateToProv
     }));
 
     try {
-      await deviceRepository.setChannelState(deviceId, channelId, state);
-      console.log(`[RoomView] setChannelState SUCCESS. Refreshing state in background...`);
+      const result = await deviceRepository.setChannelState(deviceId, channelId, state);
 
-      // Refresh the state in the background to ensure sync with server
-      const updatedDevices = await deviceRepository.getDevicesInRoom(homeId, roomId);
-      setDevices(updatedDevices);
-      console.log(`[RoomView] Background refresh complete. handleToggle END.`);
+      if (result.status === 'accepted') {
+        console.log(`[RoomView] setChannelState SUCCESS. Refreshing state in background...`);
+        // Refresh the state in the background to ensure sync with server
+        const updatedDevices = await deviceRepository.getDevicesInRoom(homeId, roomId);
+        setDevices(updatedDevices);
+      } else if (result.status === 'applied_unconfirmed') {
+        console.warn(`[RoomView] Command applied but unconfirmed. Reconciling...`);
+        await loadRoomData(true);
+      } else if (result.status === 'rejected') {
+        console.error(`[RoomView] Command rejected: ${result.reason}`);
+        // Rollback optimistic update
+        await loadRoomData(true);
+      }
+      console.log(`[RoomView] handleToggle END.`);
     } catch (e) {
       console.error(`[RoomView] handleToggle ERROR:`, e);
       // Rollback optimistic update on error
@@ -279,6 +297,7 @@ const styles = StyleSheet.create({
   },
   backBtn: {
     padding: 8,
+    width: 60,
   },
   manageBtn: {
     width: 44,
@@ -289,9 +308,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     elevation: 2,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowRadius: 2,
   },
   scrollContent: {
     padding: SiriusTheme.spacing.l,
@@ -317,6 +336,7 @@ const styles = StyleSheet.create({
   },
   modalForm: {
     gap: 12,
+    paddingVertical: 10,
   },
   label: {
     marginBottom: 4,

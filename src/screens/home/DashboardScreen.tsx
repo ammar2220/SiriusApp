@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Text,
   TextInput,
+  Alert,
 } from 'react-native';
 import { Typography, Box, Button, SiriusModal } from '../../components/common/UI';
 import { SiriusTheme } from '../../constants/theme';
@@ -25,7 +26,7 @@ const HomeCard = ({ home, index, activeHomeId, onNavigateToHome, onManageHome }:
   onNavigateToHome: (id: string) => void,
   onManageHome: (home: Home) => void
 }) => {
-  const [stats, setStats] = useState({ totalDevices: 0, activeDevices: 0 });
+  const [stats, setStats] = useState<{ totalDevices: number, activeDevices: number | null }>({ totalDevices: 0, activeDevices: null });
   const [isLoading, setIsLoading] = useState(true);
   const isActive = home.id === activeHomeId;
 
@@ -33,9 +34,7 @@ const HomeCard = ({ home, index, activeHomeId, onNavigateToHome, onManageHome }:
   useEffect(() => {
     const loadStats = async () => {
       try {
-        const session = await SessionManager.getSession();
-        const userId = session?.userId || 'user_legacy_v1';
-        const data = await deviceRepository.getHomeStats(home.id, userId);
+        const data = await deviceRepository.getHomeStats(home.id);
         setStats(data);
       } catch (e) {
         console.error(e);
@@ -68,7 +67,7 @@ const HomeCard = ({ home, index, activeHomeId, onNavigateToHome, onManageHome }:
       <View style={styles.homeInfo}>
         <Typography variant="card">{home.name}</Typography>
         <Typography variant="secondary">
-          {home.rooms.length} Rooms · {stats.totalDevices} Devices, {stats.activeDevices} devices ON
+          {home.rooms.length} Rooms · {stats.totalDevices} Devices, {stats.activeDevices !== null ? `${stats.activeDevices} devices ON` : 'live state unavailable'}
         </Typography>
       </View>
       <View style={styles.cardActions}>
@@ -91,6 +90,7 @@ const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
   const [homes, setHomes] = useState<Home[]>([]);
   const [activeHomeId, setActiveHomeId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [userName, setUserName] = useState('');
   const [isAddHomeModalVisible, setIsAddHomeModalVisible] = useState(false);
   const [newHomeName, setNewHomeName] = useState('');
   const [isManageModalVisible, setIsManageModalVisible] = useState(false);
@@ -99,24 +99,41 @@ const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
 
   useEffect(() => {
     const initDashboard = async () => {
-      await loadHomes();
-      const session = await SessionManager.getSession();
-      setActiveHomeId(session?.activeHomeId ?? null);
+      setIsLoading(true);
+      try {
+        // Run these in parallel for faster load
+        const [homesData, session] = await Promise.all([
+          deviceRepository.getHomes(),
+          SessionManager.getSession()
+        ]);
+
+        setHomes(homesData);
+        setActiveHomeId(session?.activeHomeId ?? null);
+
+        if (session?.userName) {
+          console.log('[Dashboard] Setting userName to:', session.userName);
+          setUserName(session.userName);
+        } else {
+          console.warn('[Dashboard] Session found but userName is missing');
+        }
+      } catch (e) {
+        console.error('Dashboard init failed:', e);
+      } finally {
+        setIsLoading(false);
+      }
     };
     initDashboard();
   }, []);
 
 
   useEffect(() => {
-    loadHomes();
+    // Removed duplicate loadHomes() call here as it's now handled in initDashboard
   }, []);
 
   const loadHomes = async () => {
     setIsLoading(true);
     try {
-      const session = await SessionManager.getSession();
-      const userId = session?.userId || 'user_legacy_v1';
-      const data = await deviceRepository.getHomes(userId);
+      const data = await deviceRepository.getHomes();
       setHomes(data);
     } catch (e) {
       console.error(e);
@@ -125,18 +142,26 @@ const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
     }
   };
 
+
+
   const handleAddHome = async () => {
     if (!newHomeName.trim()) return;
     try {
-      const session = await SessionManager.getSession();
-      const userId = session?.userId || 'user_legacy_v1';
-      const newHome = await deviceRepository.addHome(userId, newHomeName);
+      const newHome = await deviceRepository.addHome(newHomeName);
       setNewHomeName('');
       setIsAddHomeModalVisible(false);
       await loadHomes();
       onNavigateToHome(newHome.id);
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      const errorMessage = e.message || 'Unknown error';
+      const details = e.details || 'No additional details provided';
+      const hint = e.hint || 'No hint provided';
+
+      Alert.alert(
+        'Home Creation Failed',
+        `Error: ${errorMessage}\n\nDetails: ${details}\n\nHint: ${hint}`
+      );
     }
   };
 
@@ -189,7 +214,7 @@ const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
       <View style={styles.header}>
         <View>
-          <Typography variant="screenTitle">Hi Ammar</Typography>
+          <Typography variant="screenTitle">Hi {userName}</Typography>
           <Typography variant="secondary">Welcome Home</Typography>
         </View>
         <TouchableOpacity style={styles.notificationBtn}>

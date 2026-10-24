@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="sirius_bg">#0C1C3E</color>
+    <color name="sirius_star">#FFFFFF</color>
+    <color name="sirius_accent">#00BFFF</color>
+</resources>

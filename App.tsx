@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import './src/api/cryptoInit';
 import { SafeAreaView, StatusBar, StyleSheet, View, TouchableOpacity, Text, ActivityIndicator } from 'react-native';
+import { supabase } from './src/api/cloud/supabaseClient';
 import HardwareTestScreen from './src/screens/HardwareTestScreen';
 import ProvisioningScreen from './src/screens/ProvisioningScreen';
 import DashboardScreen from './src/screens/home/DashboardScreen';
@@ -10,6 +12,7 @@ import SignInScreen from './src/screens/auth/SignInScreen';
 import SignUpScreen from './src/screens/auth/SignUpScreen';
 import AutomationsScreen from './src/screens/AutomationsScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
+import AuthenticationService from './src/api/auth/AuthenticationService';
 import deviceRepository from './src/api/repositories/CompositeDeviceRepository';
 import SessionManager from './src/api/session/SessionManager';
 
@@ -25,14 +28,40 @@ const App = () => {
       try {
         await deviceRepository.init();
         const session = await SessionManager.getSession();
-        setSelectedHomeId(session?.activeHomeId || null);
+
+        if (session) {
+          const isValid = await AuthenticationService.validateCurrentSession();
+          if (isValid) {
+            setSelectedHomeId(session.activeHomeId || null);
+            setScreen('dashboard');
+          } else {
+            setScreen('auth-signin');
+          }
+        } else {
+          setScreen('auth-signin');
+        }
       } catch (e) {
         console.error('App hydration failed', e);
+        setScreen('auth-signin');
       } finally {
         setIsHydrating(false);
       }
     };
     hydrate();
+
+    // Listen for auth state changes globally
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
+        setScreen('auth-signin');
+        setSelectedHomeId(null);
+      } else if (event === 'SIGNED_IN' && screen === 'auth-signin') {
+        setScreen('dashboard');
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const navigateToHome = async (homeId: string) => {
@@ -58,6 +87,11 @@ const App = () => {
 
   const handleAuthSuccess = () => {
     setScreen('dashboard');
+  };
+
+  const handleLogout = async () => {
+    await AuthenticationService.signOut();
+    setScreen('auth-signin');
   };
 
   if (isHydrating) {
@@ -119,7 +153,7 @@ const App = () => {
             ) : screen === 'automations' ? (
               <AutomationsScreen />
             ) : (
-              <ProfileScreen />
+              <ProfileScreen onLogout={handleLogout} />
             )}
           </View>
 

@@ -67,3 +67,5 @@ yarn-error.log
 android/app/build/
 android/.gradle/
 android/app/src/main/assets/index.android.bundle
+**/mqtt_config.cpp
+**/mqtt_config.h

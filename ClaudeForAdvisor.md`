@@ -1,0 +1,1824 @@
+# Sirius Project Technical Overview
+
+## Core Implementation Files
+
+### src/api/session/SessionManager.ts
+```typescript
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from '../cloud/supabaseClient';
+import ProfileService from '../services/ProfileService';
+import { Alert } from 'react-native';
+
+export interface UserSession {
+  activeUserId: string;
+  activeHomeId: string | null;
+  userName: string;
+}
+
+const HOME_ID_KEY = '@sirius_active_home_id';
+
+class SessionManager {
+  private currentSession: UserSession | null = null;
+
+  async getSession(): Promise<UserSession | null> {
+    // 1. Get the actual auth session from Supabase
+    const { data: { session } } = await supabase.auth.getSession();
+
+    if (!session?.user) {
+      this.currentSession = null;
+      return null;
+    }
+
+    // Sync profile to Supabase profiles table and get the most recent data
+    let profileDisplayName = 'Sirius User';
+    try {
+      const profile = await ProfileService.syncProfile();
+      if (profile) {
+        profileDisplayName = profile.display_name || 'Sirius User';
+      }
+    } catch (e) {
+      console.warn('[SessionManager] Profile sync failed, using metadata fallback:', e);
+    }
+
+    // 2. Retrieve the activeHomeId from local storage
+    let activeHomeId: string | null = null;
+    try {
+      activeHomeId = await AsyncStorage.getItem(HOME_ID_KEY);
+    } catch (e) {
+      console.error('SessionManager: Error loading activeHomeId', e);
+    }
+
+    this.currentSession = {
+      activeUserId: session.user.id,
+      activeHomeId: activeHomeId,
+      userName: profileDisplayName,
+    };
+
+    return this.currentSession;
+  }
+
+  async setSession(session: UserSession): Promise<void> {
+    try {
+      this.currentSession = session;
+      // We only persist activeHomeId because Supabase manages the auth session
+      if (session.activeHomeId) {
+        await AsyncStorage.setItem(HOME_ID_KEY, session.activeHomeId);
+      } else {
+        await AsyncStorage.removeItem(HOME_ID_KEY);
+      }
+    } catch (e) {
+      console.error('SessionManager: Error saving session', e);
+      throw e;
+    }
+  }
+
+  async clearSession(): Promise<void> {
+    try {
+      this.currentSession = null;
+      await AsyncStorage.removeItem(HOME_ID_KEY);
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.error('SessionManager: Error clearing session', e);
+      throw e;
+    }
+  }
+
+  async setActiveHome(homeId: string | null): Promise<void> {
+    const session = await this.getSession();
+    if (session) {
+      const updated = { ...session, activeHomeId: homeId };
+      await this.setSession(updated);
+    }
+  }
+}
+
+export default new SessionManager();
+```
+
+### src/api/services/ProfileService.ts
+```typescript
+import { supabase } from '../cloud/supabaseClient';
+import { CloudProfile } from '../types/cloud';
+import { Alert } from 'react-native';
+
+/**
+ * ProfileService handles the synchronization of the user's
+ * profile in the Supabase 'profiles' table.
+ */
+export class ProfileService {
+  /**
+   * Ensures a profile exists for the current authenticated user.
+   * If it doesn't exist, it creates one.
+   */
+  async syncProfile(): Promise<CloudProfile | null> {
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      console.error('[ProfileService] No authenticated user found:', authError);
+      return null;
+    }
+
+    const userId = user.id;
+
+    // 1. Try to read the existing profile first
+    const { data: existingProfile, error: fetchError } = await supabase
+      .from('profiles')
+      .select('display_name')
+      .eq('id', userId)
+      .single();
+
+    if (!fetchError && existingProfile) {
+      return existingProfile;
+    }
+
+    // 2. Only if no profile exists, create one using user_metadata
+    const displayName = user.user_metadata?.display_name || 'Sirius User';
+
+    const { data: newProfile, error: upsertError } = await supabase
+      .from('profiles')
+      .upsert({ id: userId, display_name: displayName }, { onConflict: 'id' })
+      .select()
+      .single();
+
+    if (upsertError) {
+      console.error('[ProfileService] Error creating profile:', upsertError);
+      return null;
+    }
+
+    return newProfile;
+  }
+}
+
+export default new ProfileService();
+```
+
+### src/api/auth/AuthenticationService.ts
+```typescript
+import { supabase } from '../cloud/supabaseClient';
+import SessionManager from '../session/SessionManager';
+import ProfileService from '../services/ProfileService';
+
+class AuthenticationService {
+  async signUp(email: string, displayName: string, password: string): Promise<{ success: boolean, needsConfirmation?: boolean, error?: string }> {
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            display_name: displayName,
+          },
+        },
+      });
+
+      if (error) throw error;
+
+      if (data.user) {
+        // Immediately sync profile to avoid race conditions during home creation
+        await ProfileService.syncProfile();
+
+        // If email confirmation is enabled, the user might not be fully signed in yet
+        const needsConfirmation = data.session === null;
+
+        await SessionManager.setSession({
+          activeUserId: data.user.id,
+          activeHomeId: null,
+        });
+
+        return { success: true, needsConfirmation };
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      console.error('AuthenticationService: signUp failed', e);
+      return { success: false, error: e.message || 'An unexpected error occurred during sign-up.' };
+    }
+  }
+
+  async signIn(email: string, password: string): Promise<{ success: boolean, error?: string }> {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+
+      if (data.user) {
+        await SessionManager.setSession({
+          activeUserId: data.user.id,
+          activeHomeId: null,
+        });
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      console.error('AuthenticationService: signIn failed', e);
+      return { success: false, error: e.message || 'An unexpected error occurred during sign-in.' };
+    }
+  }
+
+  async signOut(): Promise<void> {
+    await SessionManager.clearSession();
+  }
+
+  async getCurrentSession() {
+    return SessionManager.getSession();
+  }
+
+  async validateCurrentSession(): Promise<boolean> {
+    const session = await SessionManager.getSession();
+    return !!session;
+  }
+
+  async requestPasswordReset(email: string, password: string): Promise<{ success: boolean, error?: string }> {
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email);
+      if (error) throw error;
+      return { success: true };
+    } catch (e: any) {
+      console.error('AuthenticationService: requestPasswordReset failed', e);
+      return { success: false, error: e.message || 'An unexpected error occurred.' };
+    }
+  }
+}
+
+export default new AuthenticationService();
+```
+
+### src/api/cloud/supabaseClient.ts
+```typescript
+import 'react-native-url-polyfill/auto';
+import { createClient } from '@supabase/supabase-js';
+
+/**
+ * Supabase client configuration.
+ *
+ * Using the production publishable key and project URL.
+ */
+const SUPABASE_URL = 'https://ilwdaoxftjscrztawkna.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_kw6DQ5YdNTo25DsWnKoXDA_bKdST-vK';
+
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+```
+
+### src/api/repositories/CloudDeviceRepository.ts
+```typescript
+import { supabase } from '../cloud/supabaseClient';
+import { DeviceRepository } from '../deviceRepository';
+import { Home, Room, SiriusDevice } from '../../types/home';
+import {
+  CloudHome,
+  CloudRoom,
+  CloudDevice,
+  CloudChannel,
+  CloudProfile
+} from '../../types/cloud';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+export class CloudDeviceRepository implements DeviceRepository {
+
+  async getProfile(): Promise<CloudProfile | null> {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .single();
+
+    if (error) {
+      console.error('[CloudRepo] Error fetching profile:', error);
+      return null;
+    }
+    return data;
+  }
+
+  async getHomes(): Promise<Home[]> {
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id;
+
+    if (!userId) {
+      console.error('[CloudRepo] No authenticated user found for getHomes');
+      return [];
+    }
+
+    const { data, error } = await supabase
+      .from('homes')
+      .select('*, rooms(*)')
+      .eq('owner_id', userId);
+
+    if (error) {
+      console.error('[CloudRepo] Error fetching homes:', error);
+      throw error;
+    }
+
+    return (data || []).map(h => ({
+      id: h.id,
+      userId: h.owner_id,
+      name: h.name,
+      rooms: (h.rooms || []).map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        type: r.type,
+        homeId: h.id,
+        devices: [],
+      })),
+    }));
+  }
+
+  async getHome(id: string, userId: string): Promise<Home> {
+    const { data, error } = await supabase
+      .from('homes')
+      .select('*, rooms(*)')
+      .eq('id', id)
+      .single();
+
+    if (error || !data) {
+      throw new Error(`Home ${id} not found or access denied.`);
+    }
+
+    return {
+      id: data.id,
+      userId: data.owner_id,
+      name: data.name,
+      rooms: (data.rooms || []).map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        type: r.type,
+        homeId: data.id,
+        devices: [],
+      })),
+    };
+  }
+
+  async addHome(userId: string, name: string): Promise<Home> {
+    const { data, error } = await supabase
+      .from('homes')
+      .insert({ owner_id: userId, name })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[CloudRepo] addHome failed:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      });
+      throw error;
+    }
+
+    return {
+      id: data.id,
+      userId: data.owner_id,
+      name: data.name,
+      rooms: [],
+    };
+  }
+
+  async renameHome(homeId: string, newName: string): Promise<void> {
+    const { error } = await supabase
+      .from('homes')
+      .update({ name: newName })
+      .eq('id', homeId);
+
+    if (error) throw error;
+  }
+
+  async deleteHome(homeId: string): Promise<void> {
+    const { error } = await supabase
+      .from('homes')
+      .delete()
+      .eq('id', homeId);
+
+    if (error) throw error;
+  }
+
+  async addRoom(homeId: string, name: string, type: string): Promise<Room> {
+    const { data, error } = await supabase
+      .from('rooms')
+      .insert({ home_id: homeId, name, type })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[CloudRepo] addRoom failed:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      });
+
+      // If it's an RLS failure (403 or specific PG code), we provide a clearer error
+      if (error.code === '42501') {
+        throw new Error(`Permission denied adding room to home ${homeId}. Ensure you are the owner or a member of the home.`);
+      }
+
+      throw error;
+    }
+
+    return {
+      id: data.id,
+      name: data.name,
+      type: data.type,
+      homeId: data.home_id,
+      devices: [],
+    };
+  }
+
+  async renameRoom(homeId: string, roomId: string, newName: string): Promise<void> {
+    const { error } = await supabase
+      .from('rooms')
+      .update({ name: newName })
+      .eq('id', roomId);
+
+    if (error) throw error;
+  }
+
+  async deleteRoom(homeId: string, roomId: string): Promise<void> {
+    const { error } = await supabase
+      .from('rooms')
+      .delete()
+      .eq('id', roomId);
+
+    if (error) throw error;
+  }
+
+  async getDevice(id: string): Promise<SiriusDevice> {
+    const { data, error } = await supabase
+      .from('devices')
+      .select('*, rooms(home_id)')
+      .eq('id', id)
+      .single();
+
+    if (error || !data) throw new Error(`Device ${id} not found in cloud.`);
+
+    return {
+      factoryId: data.factory_id,
+      displayName: data.name,
+      ipAddress: '',
+      powerState: 'unknown',
+      rssi: 0,
+      connectionStatus: 'offline',
+      firmwareVersion: 'unknown',
+      roomId: data.room_id,
+      homeId: data.rooms?.home_id || '',
+      type: 'relay',
+      product: {
+        code: data.product_code || 'SIRIUS_SWITCH_1CH',
+        name: 'Sirius Switch',
+        channelCount: data.channel_count,
+        capabilities: ['switch'],
+      },
+      channels: [],
+      lastSeen: null,
+    } as any;
+  }
+
+  async getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]> {
+    const { data, error } = await supabase
+      .from('devices')
+      .select('*')
+      .eq('room_id', roomId);
+
+    if (error) throw error;
+
+    return (data || []).map(d => ({
+      factoryId: d.factory_id,
+      displayName: d.name,
+      ipAddress: '',
+      powerState: 'unknown',
+      rssi: 0,
+      connectionStatus: 'offline',
+      firmwareVersion: 'unknown',
+      roomId: d.room_id,
+      homeId: homeId,
+      type: 'relay',
+      product: {
+        code: d.product_code || 'SIRIUS_SWITCH_1CH',
+        name: 'Sirius Switch',
+        channelCount: d.channel_count,
+        capabilities: ['switch'],
+      },
+      channels: [],
+      lastSeen: null,
+    })) as any[];
+  }
+
+  async addDevice(homeId: string, roomId: string, name: string, factoryId: string): Promise<SiriusDevice> {
+    const { data, error } = await supabase
+      .from('devices')
+      .insert({
+        room_id: roomId,
+        name,
+        factory_id: factoryId,
+        channel_count: 1 // Default to 1CH for now, can be updated via /api/info
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return {
+      factoryId: data.factory_id,
+      displayName: data.name,
+      ipAddress: '',
+      powerState: 'unknown',
+      rssi: 0,
+      connectionStatus: 'offline',
+      firmwareVersion: 'unknown',
+      roomId: data.room_id,
+      homeId: homeId,
+      type: 'relay',
+      product: {
+        code: 'SIRIUS_SWITCH_1CH',
+        name: 'Sirius Switch',
+        channelCount: 1,
+        capabilities: ['switch'],
+      },
+      channels: [],
+      lastSeen: null,
+    } as any;
+  }
+
+  async removeDevice(deviceId: string): Promise<void> {
+    const { error } = await supabase
+      .from('devices')
+      .delete()
+      .eq('id', deviceId);
+
+    if (error) throw error;
+  }
+
+  async renameDevice(deviceId: string, newName: string): Promise<void> {
+    const { error } = await supabase
+      .from('devices')
+      .update({ name: newName })
+      .eq('id', deviceId);
+
+    if (error) throw error;
+  }
+
+  async moveDevice(deviceId: string, newRoomId: string, newHomeId: string): Promise<void> {
+    const { error } = await supabase
+      .from('devices')
+      .update({ room_id: newRoomId })
+      .eq('id', deviceId);
+
+    if (error) throw error;
+  }
+
+  async setChannelState(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }> {
+    throw new Error('CloudRepository does not handle physical device control.');
+  }
+
+  async getState(deviceId: string): Promise<SiriusDevice> {
+    return this.getDevice(deviceId);
+  }
+}
+
+export default new CloudDeviceRepository();
+```
+
+### src/api/repositories/CompositeDeviceRepository.ts
+```typescript
+import { DeviceRepository } from '../deviceRepository';
+import { Home, Room, SiriusDevice } from '../../types/home';
+import MockDeviceRepository from './MockDeviceRepository';
+import LocalEsp32DeviceRepository from './LocalEsp32DeviceRepository';
+import CloudDeviceRepository from './CloudDeviceRepository';
+import SessionManager from '../session/SessionManager';
+import MigrationService from '../services/MigrationService';
+import persistentStorage from '../persistence/PersistentStorage';
+import { SiriusDevice as CloudSiriusDevice } from '../../types/home';
+
+class CompositeDeviceRepository implements DeviceRepository {
+  private mockRepo = MockDeviceRepository;
+  private localRepo = LocalEsp32DeviceRepository;
+  private cloudRepo = CloudDeviceRepository;
+
+  private async getActiveUserId(): Promise<string> {
+    const session = await SessionManager.getSession();
+    if (!session || !session.activeUserId) {
+      throw new Error('Unauthorized: No active user session found.');
+    }
+    return session.activeUserId;
+  }
+
+  private async getActiveHomeId(roomId: string): Promise<string> {
+    const userId = await this.getActiveUserId();
+    const homes = await this.cloudRepo.getHomes();
+    const home = homes.find(h => h.rooms.some(r => r.id === roomId));
+    if (!home) {
+      throw new Error('Unauthorized: Room not found in any of the user\'s homes.');
+    }
+    return home.id;
+  }
+
+  async init(): Promise<void> {
+    // 1. Init physical device state
+    await this.localRepo.init();
+
+    // 2. Handle Local -> Cloud Migration
+    const userId = await this.getActiveUserId();
+    const migrationCompleted = await MigrationService.isMigrationCompleted();
+
+    if (!migrationCompleted) {
+      console.log('[CompositeRepo] Checking for pending migration...');
+      await MigrationService.performMigration(userId);
+    }
+
+    // We keep mockRepo init for backward compatibility if needed,
+    // but the authority is now the cloud.
+    await this.mockRepo.init();
+  }
+
+  async getHomes(): Promise<Home[]> {
+    return this.cloudRepo.getHomes();
+  }
+
+  async getHomeStats(homeId: string): Promise<{ totalDevices: number, activeDevices: number }> {
+    const home = await this.getHome(homeId, await this.getActiveUserId());
+    let total = 0;
+    let active = 0;
+
+    for (const room of home.rooms) {
+      const devices = await this.getDevicesInRoom(homeId, room.id);
+      total += devices.length;
+      active += devices.filter(d => d.channels.some(ch => ch.state === 'on')).length;
+    }
+
+    return { totalDevices: total, activeDevices: active };
+  }
+
+  async getHome(id: string, userId: string): Promise<Home> {
+    return this.cloudRepo.getHome(id, userId);
+  }
+
+  async addHome(name: string): Promise<Home> {
+    try {
+      const userId = await this.getActiveUserId();
+      return await this.cloudRepo.addHome(userId, name);
+    } catch (e: any) {
+      console.error('[CompositeRepo] addHome failed:', e);
+      throw e;
+    }
+  }
+
+  async renameHome(homeId: string, newName: string): Promise<void> {
+    return this.cloudRepo.renameHome(homeId, newName);
+  }
+
+  async deleteHome(homeId: string): Promise<void> {
+    return this.cloudRepo.deleteHome(homeId);
+  }
+
+  async addRoom(homeId: string, name: string, type: string): Promise<Room> {
+    return this.cloudRepo.addRoom(homeId, name, type);
+  }
+
+  async renameRoom(homeId: string, roomId: string, newName: string): Promise<void> {
+    return this.cloudRepo.renameRoom(homeId, roomId, newName);
+  }
+
+  async deleteRoom(homeId: string, roomId: string): Promise<void> {
+    return this.cloudRepo.deleteRoom(homeId, roomId);
+  }
+
+  async getDevice(id: string): Promise<SiriusDevice> {
+    try {
+      // 1. Fetch logical metadata from Cloud
+      const cloudDevice = await this.cloudRepo.getDevice(id);
+
+      // 2. Enrich with physical state from Local repo if available
+      const localDevice = await this.localRepo.getDevice(id).catch(() => null);
+
+      if (localDevice) {
+        return {
+          ...cloudDevice,
+          ipAddress: localDevice.ipAddress,
+          powerState: localDevice.powerState,
+          rssi: localDevice.rssi,
+          connectionStatus: localDevice.connectionStatus,
+          firmwareVersion: localDevice.firmwareVersion,
+          lastSeen: localDevice.lastSeen,
+          channels: localDevice.channels,
+        };
+      }
+
+      return cloudDevice;
+    } catch (e) {
+      // Fallback to mock only if cloud fails (migration gap)
+      return await this.mockRepo.getDevice(id);
+    }
+  }
+
+  async getDevicesInRoom(homeId: string, roomId: string): Promise<SiriusDevice[]> {
+    // 1. Get logical devices from Cloud
+    const cloudDevices = await this.cloudRepo.getDevicesInRoom(homeId, roomId);
+
+    const resolvedDevices: SiriusDevice[] = [];
+
+    for (const cloudDevice of cloudDevices) {
+      try {
+        // 2. Enrich each device with local physical state
+        // Use factoryId as the link between cloud logical ID and local physical state
+        const localDevice = await this.localRepo.getDevice(cloudDevice.factoryId).catch(() => null);
+
+        if (localDevice) {
+          resolvedDevices.push({
+            ...cloudDevice,
+            ipAddress: localDevice.ipAddress,
+            powerState: localDevice.powerState,
+            rssi: localDevice.rssi,
+            connectionStatus: localDevice.connectionStatus,
+            firmwareVersion: localDevice.firmwareVersion,
+            lastSeen: localDevice.lastSeen,
+            channels: localDevice.channels,
+          });
+        } else {
+          // Device exists in cloud but not found locally
+          resolvedDevices.push(cloudDevice);
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    return resolvedDevices;
+  }
+
+  async addDevice(roomId: string, name: string, ip?: string): Promise<SiriusDevice> {
+    const homeId = await this.getActiveHomeId(roomId);
+
+    // 1. Physical Registration (Local Authority)
+    // The local repo handles IP discovery and saves the physical mapping
+    const localDevice = await this.localRepo.addDevice(homeId, roomId, name, ip);
+
+    // 2. Logical Registration (Cloud Authority)
+    // Register the device in Supabase using the Factory ID
+    const cloudDevice = await this.cloudRepo.addDevice(homeId, roomId, name, localDevice.factoryId);
+
+    return {
+      ...cloudDevice,
+      ipAddress: localDevice.ipAddress,
+    };
+  }
+
+  async setChannelState(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }> {
+    // Physical control is ALWAYS local
+    try {
+      return await this.localRepo.setChannelState(deviceId, channelId, state);
+    } catch {
+      return await this.mockRepo.setChannelState(deviceId, channelId, state);
+    }
+  }
+
+  async getState(deviceId: string): Promise<SiriusDevice> {
+    try {
+      return await this.localRepo.getState(deviceId);
+    } catch {
+      return await this.mockRepo.getDeviceState(deviceId);
+    }
+  }
+
+  async removeDevice(deviceId: string): Promise<void> {
+    const userId = await this.getActiveUserId();
+
+    // 1. Remove from Cloud (Logical)
+    await this.cloudRepo.removeDevice(deviceId);
+
+    // 2. Reset physical device and remove from Local (Physical)
+    const device = await this.localRepo.getDevice(deviceId).catch(() => null);
+    if (device) {
+      await this.localRepo.resetDevice(deviceId);
+      await this.localRepo.removeDevice(deviceId).catch(() => {});
+    }
+
+    await this.mockRepo.removeDevice(deviceId).catch(() => {});
+  }
+
+  async renameDevice(deviceId: string, newName: string): Promise<void> {
+    // Rename is a logical property -> Cloud Authority
+    return this.cloudRepo.renameDevice(deviceId, newName);
+  }
+
+  async moveDevice(deviceId: string, newRoomId: string, newHomeId: string): Promise<void> {
+    // Move is a logical property -> Cloud Authority
+    return this.cloudRepo.moveDevice(deviceId, newRoomId, newHomeId);
+  }
+}
+
+export default new CompositeDeviceRepository();
+```
+
+### src/screens/home/DashboardScreen.tsx
+```typescript
+import React, { useState, useEffect } from 'react';
+import {
+  StyleSheet,
+  View,
+  ScrollView,
+  TouchableOpacity,
+  ActivityIndicator,
+  Text,
+  TextInput,
+  Alert,
+} from 'react-native';
+import { Typography, Box, Button, SiriusModal } from '../../components/common/UI';
+import { SiriusTheme } from '../../constants/theme';
+import deviceRepository from '../../api/repositories/CompositeDeviceRepository';
+import SessionManager from '../../api/session/SessionManager';
+import { Home } from '../../types/home';
+
+interface DashboardProps {
+  onNavigateToHome: (homeId: string) => void;
+}
+
+const HomeCard = ({ home, index, activeHomeId, onNavigateToHome, onManageHome }: {
+  home: Home,
+  index: number,
+  activeHomeId: string | null,
+  onNavigateToHome: (id: string) => void,
+  onManageHome: (home: Home) => void
+}) => {
+  const [stats, setStats] = useState({ totalDevices: 0, activeDevices: 0 });
+  const [isLoading, setIsLoading] = useState(true);
+  const isActive = home.id === activeHomeId;
+
+  useEffect(() => {
+    const loadStats = async () => {
+      try {
+        const data = await deviceRepository.getHomeStats(home.id);
+        setStats(data);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    loadStats();
+  }, [home.id]);
+
+  if (isLoading) {
+    return (
+      <View style={[styles.homeCard, index === 0 && styles.activeHomeCard, { justifyContent: 'center', height: 80 }]}>
+        <ActivityIndicator color={SiriusTheme.colors.primary} />
+      </View>
+    );
+  }
+
+  return (
+    <TouchableOpacity
+      style={[
+        styles.homeCard,
+        isActive && styles.activeHomeCard
+      ]}
+      onPress={() => onNavigateToHome(home.id)}
+    >
+      <View style={styles.homeIcon}>
+        <Text style={{ fontSize: 24 }}>🏠</Text>
+      </View>
+      <View style={styles.homeInfo}>
+        <Typography variant="card">{home.name}</Typography>
+        <Typography variant="secondary">
+          {home.rooms.length} Rooms · {stats.totalDevices} Devices, {stats.activeDevices} devices ON
+        </Typography>
+      </View>
+      <View style={styles.cardActions}>
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={() => onManageHome(home)}
+        >
+          <Text style={styles.actionText}>⚙️</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.chevron}>
+          <Text style={{ color: SiriusTheme.colors.textSecondary }}>→</Text>
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
+  );
+
+};
+
+const DashboardScreen = ({ onNavigateToHome }: DashboardProps) => {
+  const [homes, setHomes] = useState<Home[]>([]);
+  const [activeHomeId, setActiveHomeId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [userName, setUserName] = useState('');
+  const [isAddHomeModalVisible, setIsAddHomeModalVisible] = useState(false);
+  const [newHomeName, setNewHomeName] = useState('');
+  const [isManageModalVisible, setIsManageModalVisible] = useState(false);
+  const [selectedHomeForManage, setSelectedHomeForManage] = useState<Home | null>(null);
+  const [manageHomeName, setManageHomeName] = useState('');
+
+  useEffect(() => {
+    const initDashboard = async () => {
+      setIsLoading(true);
+      try {
+        // Run these in parallel for faster load
+        const [homesData, session] = await Promise.all([
+          deviceRepository.getHomes(),
+          SessionManager.getSession()
+        ]);
+
+        setHomes(homesData);
+        setActiveHomeId(session?.activeHomeId ?? null);
+
+        if (session?.userName) {
+          console.log('[Dashboard] Setting userName to:', session.userName);
+          setUserName(session.userName);
+        } else {
+          console.warn('[Dashboard] Session found but userName is missing');
+        }
+      } catch (e) {
+        console.error('Dashboard init failed:', e);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    initDashboard();
+  }, []);
+
+
+  useEffect(() => {
+    // Removed duplicate loadHomes() call here as it's now handled in initDashboard
+  }, []);
+  const loadHomes = async () => {
+    setIsLoading(true);
+    try {
+      const data = await deviceRepository.getHomes();
+      setHomes(data);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+
+  const handleAddHome = async () => {
+    if (!newHomeName.trim()) return;
+    try {
+      const newHome = await deviceRepository.addHome(newHomeName);
+      setNewHomeName('');
+      setIsAddHomeModalVisible(false);
+      await loadHomes();
+      onNavigateToHome(newHome.id);
+    } catch (e: any) {
+      console.error(e);
+      const errorMessage = e.message || 'Unknown error';
+      const details = e.details || 'No additional details provided';
+      const hint = e.hint || 'No hint provided';
+
+      Alert.alert(
+        'Home Creation Failed',
+        `Error: ${errorMessage}\n\nDetails: ${details}\n\nHint: ${hint}`
+      );
+    }
+  };
+
+
+  const handleManageHome = (home: Home) => {
+    setSelectedHomeForManage(home);
+    setManageHomeName(home.name);
+    setIsManageModalVisible(true);
+  };
+
+  const handleRenameHome = async () => {
+    if (!selectedHomeForManage || !manageHomeName.trim()) return;
+    try {
+      await deviceRepository.renameHome(selectedHomeForManage.id, manageHomeName);
+      setIsManageModalVisible(false);
+      await loadHomes();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteHome = async () => {
+    if (!selectedHomeForManage) return;
+    try {
+      const homeIdToDelete = selectedHomeForManage.id;
+      await deviceRepository.deleteHome(homeIdToDelete);
+
+      if (activeHomeId === homeIdToDelete) {
+        await SessionManager.setActiveHome(null);
+        setActiveHomeId(null);
+      }
+
+      setIsManageModalVisible(false);
+      await loadHomes();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+
+  if (isLoading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={SiriusTheme.colors.primary} />
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
+      <View style={styles.header}>
+        <View>
+          <Typography variant="screenTitle">Hi {userName}</Typography>
+          <Typography variant="secondary">Welcome Home</Typography>
+        </View>
+        <TouchableOpacity style={styles.notificationBtn}>
+           <Text style={{ fontSize: 24 }}>🔔</Text>
+        </TouchableOpacity>
+      </View>
+
+      <Typography variant="section" style={styles.sectionTitle}>My Homes</Typography>
+
+      {homes.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <Typography variant="secondary" style={styles.emptyText}>No homes yet. Create your first home to get started.</Typography>
+          <Button
+            title="+ Create Home"
+            onPress={() => setIsAddHomeModalVisible(true)}
+            variant="primary"
+            style={styles.emptyBtn}
+          />
+        </View>
+      ) : (
+        <View style={styles.homeList}>
+          {homes.map((home, index) => (
+            <HomeCard
+              key={home.id}
+              home={home}
+              index={index}
+              activeHomeId={activeHomeId}
+              onNavigateToHome={onNavigateToHome}
+              onManageHome={handleManageHome}
+            />
+          ))}
+        </View>
+      )}
+
+      {homes.length > 0 && (
+        <Button
+          title="+ Add Home"
+          onPress={() => setIsAddHomeModalVisible(true)}
+          variant="secondary"
+          style={styles.addHomeBtn}
+        />
+      )}
+
+      <SiriusModal
+        isVisible={isAddHomeModalVisible}
+        onClose={() => setIsAddHomeModalVisible(false)}
+        title="Add New Home"
+      >
+        <View style={styles.modalForm}>
+          <Typography variant="secondary" style={styles.label}>Home Name</Typography>
+          <TextInput
+            style={styles.input}
+            placeholder="e.g. My Dream Home"
+            value={newHomeName}
+            onChangeText={setNewHomeName}
+            placeholderTextColor={SiriusTheme.colors.disabled}
+          />
+          <Button
+            title="Save Home"
+            onPress={handleAddHome}
+            style={{ marginTop: 24 }}
+          />
+        </View>
+      </SiriusModal>
+
+      <SiriusModal
+        isVisible={isManageModalVisible}
+        onClose={() => setIsManageModalVisible(false)}
+        title={selectedHomeForManage ? `Manage ${selectedHomeForManage.name}` : 'Manage Home'}
+      >
+        <View style={styles.modalForm}>
+          <Typography variant="secondary" style={styles.label}>Home Name</Typography>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter home name"
+            value={manageHomeName}
+            onChangeText={setManageHomeName}
+            placeholderTextColor={SiriusTheme.colors.disabled}
+          />
+          <View style={styles.modalActions}>
+            <Button
+              title="Save Changes"
+              onPress={handleRenameHome}
+              style={{ flex: 1, marginRight: 8 }}
+            />
+            <Button
+              title="Delete Home"
+              onPress={handleDeleteHome}
+              variant="secondary"
+              style={{ flex: 1, borderColor: 'red' }}
+            />
+          </View>
+          <Typography variant="secondary" style={styles.warningText}>
+            Deleting a home will remove its rooms and devices from the app. Physical devices will NOT be reset.
+          </Typography>
+        </View>
+      </SiriusModal>
+    </ScrollView>
+  );
+
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: SiriusTheme.colors.background,
+  },
+  contentContainer: {
+    padding: SiriusTheme.spacing.l,
+    paddingBottom: 40,
+  },
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: SiriusTheme.colors.background,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 32,
+    marginTop: 20,
+  },
+  notificationBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: SiriusTheme.colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  sectionTitle: {
+    marginBottom: 16,
+  },
+  homeList: {
+    gap: 16,
+    marginBottom: 32,
+  },
+  homeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: SiriusTheme.colors.surface,
+    borderRadius: SiriusTheme.borderRadius.l,
+    padding: SiriusTheme.spacing.m,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+  },
+  activeHomeCard: {
+    borderColor: SiriusTheme.colors.primary,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  actionBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: SiriusTheme.colors.primaryLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  actionText: {
+    fontSize: 14,
+  },
+  homeIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: SiriusTheme.colors.primaryLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  homeInfo: {
+    flex: 1,
+  },
+  chevron: {
+    padding: 8,
+  },
+  addHomeBtn: {
+    width: '100%',
+    height: 56,
+    borderRadius: SiriusTheme.borderRadius.m,
+    borderWidth: 1,
+    borderColor: SiriusTheme.colors.primary,
+  },
+  modalForm: {
+    gap: 12,
+  },
+  label: {
+    marginBottom: 4,
+  },
+  input: {
+    backgroundColor: SiriusTheme.colors.surface,
+    borderRadius: SiriusTheme.borderRadius.m,
+    padding: SiriusTheme.spacing.m,
+    borderWidth: 1,
+    borderColor: SiriusTheme.colors.disabled,
+    color: SiriusTheme.colors.textPrimary,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+    marginVertical: 40,
+  },
+  emptyText: {
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  emptyBtn: {
+    width: '100%',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 24,
+  },
+  warningText: {
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 16,
+    color: SiriusTheme.colors.textSecondary,
+  },
+});
+
+export default DashboardScreen;
+```
+
+### src/screens/ProfileScreen.tsx
+```typescript
+import React, { useState, useEffect } from 'react';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { Typography, Box, Button } from '../components/common/UI';
+import { SiriusTheme } from '../constants/theme';
+import SessionManager from '../api/session/SessionManager';
+import AuthenticationService from '../api/auth/AuthenticationService';
+
+
+interface ProfileProps {
+  onLogout: () => void;
+}
+
+const ProfileScreen = ({ onLogout }: ProfileProps) => {
+  const [userName, setUserName] = useState('User');
+
+  useEffect(() => {
+    const loadUser = async () => {
+      const session = await SessionManager.getSession();
+      if (session) {
+        setUserName(session.userName);
+      }
+    };
+    loadUser();
+  }, []);
+
+  const handleLogout = async () => {
+    Alert.alert('Logout', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Logout',
+        style: 'destructive',
+        onPress: async () => {
+          await AuthenticationService.signOut();
+          onLogout();
+        },
+      },
+    ]);
+  };
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Typography variant="screenTitle">Profile</Typography>
+        <Typography variant="secondary">Account Settings</Typography>
+      </View>
+
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.profileHeader}>
+          <View style={styles.avatar} />
+          <Typography variant="card">{userName}</Typography>
+          <Typography variant="secondary">Premium Member</Typography>
+        </View>
+
+        <Box elevation="light" style={styles.settingsList}>
+          <View style={styles.settingItem}>
+            <Typography variant="body">My Homes</Typography>
+            <Typography variant="secondary">→</Typography>
+          </View>
+          <View style={styles.settingItem}>
+            <Typography variant="body">Notification Settings</Typography>
+            <Typography variant="secondary">→</Typography>
+          </View>
+          <View style={styles.settingItem}>
+            <Typography variant="body">Security & Privacy</Typography>
+            <Typography variant="secondary">→</Typography>
+          </View>
+          <View style={styles.settingItem}>
+            <Typography variant="body">Help & Support</Typography>
+            <Typography variant="secondary">→</Typography>
+          </View>
+        </Box>
+
+        <Button
+          title="Logout"
+          onPress={handleLogout}
+          style={styles.logoutBtn}
+        />
+      </ScrollView>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: SiriusTheme.colors.background,
+  },
+  header: {
+    padding: SiriusTheme.spacing.l,
+    paddingTop: 40,
+    marginBottom: 20,
+  },
+  content: {
+    padding: SiriusTheme.spacing.l,
+  },
+  profileHeader: {
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  avatar: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: SiriusTheme.colors.primaryLight,
+    marginBottom: 16,
+  },
+  settingsList: {
+    gap: 1,
+    backgroundColor: SiriusTheme.colors.disabled,
+    borderRadius: SiriusTheme.borderRadius.m,
+    overflow: 'hidden',
+    marginBottom: 24,
+  },
+  settingItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: SiriusTheme.spacing.m,
+    backgroundColor: SiriusTheme.colors.surface,
+  },
+  logoutBtn: {
+    height: 56,
+    borderRadius: SiriusTheme.borderRadius.m,
+    backgroundColor: SiriusTheme.colors.error || '#FF3B30',
+  },
+});
+
+export default ProfileScreen;
+```
+
+### src/screens/auth/SignInScreen.tsx
+```typescript
+import React, { useState } from 'react';
+import {
+  StyleSheet,
+  View,
+  TouchableOpacity,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  TextInput,
+  Alert,
+  Image,
+} from 'react-native';
+import { Typography, Box, Button } from '../../components/common/UI';
+import { SiriusTheme } from '../../constants/theme';
+import AuthenticationService from '../../api/auth/AuthenticationService';
+
+interface SignInProps {
+  onSignIn: () => void;
+  onNavigateToSignUp: () => void;
+}
+
+const SignInScreen = ({ onSignIn, onNavigateToSignUp }: SignInProps) => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleSignIn = async () => {
+    if (!email || !password) {
+      Alert.alert('Error', 'Please enter both email and password');
+      return;
+    }
+
+    setIsLoading(true);
+    const result = await AuthenticationService.signIn(email, password);
+    setIsLoading(false);
+
+    if (result.success) {
+      onSignIn();
+    } else {
+      Alert.alert('Sign In Failed', result.error || 'Invalid email or password');
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={styles.container}
+    >
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.header}>
+          <View style={styles.logoContainer}>
+            <Image
+              source={require('../../assets/images/sirius_logo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+          </View>
+          <Typography variant="body" style={styles.subtitle}>
+            Welcome back to your smart home.
+          </Typography>
+        </View>
+
+        <View style={styles.form}>
+          <Box style={styles.inputWrapper}>
+            <Typography variant="secondary" style={styles.label}>Email</Typography>
+            <TextInput
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+              placeholder="email@example.com"
+              autoCapitalize="none"
+              keyboardType="email-address"
+            />
+          </Box>
+
+          <Box style={styles.inputWrapper}>
+            <Typography variant="secondary" style={styles.label}>Password</Typography>
+            <TextInput
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+              placeholder="••••••••"
+              secureTextEntry
+            />
+          </Box>
+
+          <Button
+            title="Sign In"
+            onPress={handleSignIn}
+            loading={isLoading}
+            style={styles.signInBtn}
+          />
+        </View>
+
+        <TouchableOpacity style={styles.footer} onPress={onNavigateToSignUp}>
+          <Typography variant="body">Don't have an account? </Typography>
+          <Typography variant="body" style={styles.link}>Sign Up</Typography>
+        </TouchableOpacity>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: SiriusTheme.colors.background,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    padding: SiriusTheme.spacing.l,
+    justifyContent: 'center',
+    paddingBottom: 40,
+  },
+  header: {
+    alignItems: 'center',
+    marginBottom: 48,
+  },
+  logoContainer: {
+    width: 120,
+    height: 120,
+    borderRadius: 30,
+    backgroundColor: '#0C1C3E',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+  },
+  logo: {
+    width: '70%',
+    height: '70%',
+  },
+  subtitle: {
+    textAlign: 'center',
+    opacity: 0.6,
+    marginTop: 8,
+  },
+  form: {
+    gap: 24,
+    marginBottom: 32,
+  },
+  inputWrapper: {
+    padding: 0,
+    backgroundColor: 'transparent',
+    elevation: 0,
+    shadowOpacity: 0,
+  },
+  label: {
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  input: {
+    backgroundColor: SiriusTheme.colors.surface,
+    borderRadius: SiriusTheme.borderRadius.m,
+    padding: SiriusTheme.spacing.m,
+    borderWidth: 1,
+    borderColor: SiriusTheme.colors.disabled,
+    color: SiriusTheme.colors.textPrimary,
+  },
+  signInBtn: {
+    marginTop: 16,
+    height: 56,
+    borderRadius: SiriusTheme.borderRadius.m,
+  },
+  footer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 24,
+  },
+  link: {
+    color: SiriusTheme.colors.primary,
+    fontWeight: 'bold',
+  },
+});
+
+export default SignInScreen;
+```
+
+### src/screens/auth/SignUpScreen.tsx
+```typescript
+import React, { useState } from 'react';
+import {
+  StyleSheet,
+  View,
+  TouchableOpacity,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  TextInput,
+  Alert,
+  Image,
+} from 'react-native';
+import { Typography, Box, Button } from '../../components/common/UI';
+import { SiriusTheme } from '../../constants/theme';
+import AuthenticationService from '../../api/auth/AuthenticationService';
+
+interface SignUpProps {
+  onSignUp: () => void;
+  onNavigateToSignIn: () => void;
+}
+
+const SignUpScreen = ({ onSignUp, onNavigateToSignIn }: SignUpProps) => {
+  const [displayName, setDisplayName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleSignUp = async () => {
+    if (!displayName || !email || !password || !confirmPassword) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match');
+      return;
+    }
+
+    if (password.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters long');
+      return;
+    }
+
+    setIsLoading(true);
+    const result = await AuthenticationService.signUp(email, displayName, password);
+    setIsLoading(false);
+
+    if (result.success) {
+      if (result.needsConfirmation) {
+        Alert.alert(
+          'Verify Your Email',
+          'A confirmation link has been sent to your email. Please verify your account before signing in.',
+          [{ text: 'OK', onPress: onNavigateToSignIn }]
+        );
+      } else {
+        onSignUp();
+      }
+    } else {
+      Alert.alert('Sign Up Failed', result.error || 'An unexpected error occurred');
+    }
+  };
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={styles.container}
+    >
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.header}>
+          <View style={styles.logoContainer}>
+            <Image
+              source={require('../../assets/images/sirius_logo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+          </View>
+          <Typography variant="body" style={styles.subtitle}>
+            Join the premium smart home experience.
+          </Typography>
+        </View>
+
+        <View style={styles.form}>
+          <Box style={styles.inputWrapper}>
+            <Typography variant="secondary" style={styles.label}>Full Name</Typography>
+            <TextInput
+              style={styles.input}
+              value={displayName}
+              onChangeText={setDisplayName}
+              placeholder="e.g. Ammar Muhammad"
+              autoCapitalize="words"
+            />
+          </Box>
+
+          <Box style={styles.inputWrapper}>
+            <Typography variant="secondary" style={styles.label}>Email</Typography>
+            <TextInput
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+              placeholder="email@example.com"
+              autoCapitalize="none"
+              keyboardType="email-address"
+            />
+          </Box>
+
+          <Box style={styles.inputWrapper}>
+            <Typography variant="secondary" style={styles.label}>Password</Typography>
+            <TextInput
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+              placeholder="••••••••"
+              secureTextEntry
+            />
+          </Box>
+
+          <Box style={styles.inputWrapper}>
+            <Typography variant="secondary" style={styles.label}>Confirm Password</Typography>
+            <TextInput
+              style={styles.input}
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              placeholder="••••••••"
+              secureTextEntry
+            />
+          </Box>
+
+          <Button
+            title="Create Account"
+            onPress={handleSignUp}
+            loading={isLoading}
+            style={styles.signUpBtn}
+          />
+        </View>
+
+        <TouchableOpacity style={styles.footer} onPress={onNavigateToSignIn}>
+          <Typography variant="body">Already have an account? </Typography>
+          <Typography variant="body" style={styles.link}>Sign In</Typography>
+        </TouchableOpacity>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: SiriusTheme.colors.background,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    padding: SiriusTheme.spacing.l,
+    justifyContent: 'center',
+    paddingBottom: 40,
+  },
+  header: {
+    alignItems: 'center',
+    marginBottom: 48,
+  },
+  logoContainer: {
+    width: 120,
+    height: 120,
+    borderRadius: 30,
+    backgroundColor: '#0C1C3E',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+  },
+  logo: {
+    width: '70%',
+    height: '70%',
+  },
+  subtitle: {
+    textAlign: 'center',
+    opacity: 0.6,
+    marginTop: 8,
+  },
+  form: {
+    gap: 24,
+    marginBottom: 32,
+  },
+  inputWrapper: {
+    padding: 0,
+    backgroundColor: 'transparent',
+    elevation: 0,
+    shadowOpacity: 0,
+  },
+  label: {
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  input: {
+    backgroundColor: SiriusTheme.colors.surface,
+    borderRadius: SiriusTheme.borderRadius.m,
+    padding: SiriusTheme.spacing.m,
+    borderWidth: 1,
+    borderColor: SiriusTheme.colors.disabled,
+    color: SiriusTheme.colors.textPrimary,
+  },
+  signUpBtn: {
+    marginTop: 16,
+    height: 56,
+    borderRadius: SiriusTheme.borderRadius.m,
+  },
+  footer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 24,
+  },
+  link: {
+    color: SiriusTheme.colors.primary,
+    fontWeight: 'bold',
+  },
+});
+
+export default SignUpScreen;
+```
+
+## Current Project Status
+
+### Existing Bugs
+- **Add Room Failure**: Intermittent failures when adding rooms to homes. Currently suspected to be Row Level Security (RLS) restrictions in Supabase.
+
+### Roadmap
+- **Phase 6B**: Implementation of advanced home automation, multi-user home sharing, and detailed device telemetry.
+- **Hardware Integration**: Finalizing the transition from prototypes to production-ready ESP32 firmware.
+- **UX Polish**: Refining the onboarding flow and device management interfaces.

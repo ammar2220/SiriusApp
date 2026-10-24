@@ -3,13 +3,16 @@ import {
   StyleSheet,
   View,
   TouchableOpacity,
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  TextInput,
+  Alert,
+  Image,
 } from 'react-native';
 import { Typography, Box, Button } from '../../components/common/UI';
 import { SiriusTheme } from '../../constants/theme';
+import AuthenticationService from '../../api/auth/AuthenticationService';
 
 interface SignInProps {
   onSignIn: () => void;
@@ -22,11 +25,20 @@ const SignInScreen = ({ onSignIn, onNavigateToSignUp }: SignInProps) => {
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSignIn = async () => {
+    if (!email || !password) {
+      Alert.alert('Error', 'Please enter both email and password');
+      return;
+    }
+
     setIsLoading(true);
-    // Mock delay for premium feel
-    await new Promise(resolve => setTimeout(() => resolve(true), 1500));
+    const result = await AuthenticationService.signIn(email, password);
     setIsLoading(false);
-    onSignIn();
+
+    if (result.success) {
+      onSignIn();
+    } else {
+      Alert.alert('Sign In Failed', result.error || 'Invalid email or password');
+    }
   };
 
   return (
@@ -36,8 +48,12 @@ const SignInScreen = ({ onSignIn, onNavigateToSignUp }: SignInProps) => {
     >
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
-          <View style={styles.logoPlaceholder}>
-            <Typography variant="screenTitle" style={styles.logoText}>SIRIUS</Typography>
+          <View style={styles.logoContainer}>
+            <Image
+              source={require('../../assets/images/sirius_logo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
           </View>
           <Typography variant="body" style={styles.subtitle}>
             Welcome back to your smart home.
@@ -47,16 +63,25 @@ const SignInScreen = ({ onSignIn, onNavigateToSignUp }: SignInProps) => {
         <View style={styles.form}>
           <Box style={styles.inputWrapper}>
             <Typography variant="secondary" style={styles.label}>Email</Typography>
-            <TouchableOpacity style={styles.input} onPress={() => {}}>
-              <Typography variant="body">{email || 'email@example.com'}</Typography>
-            </TouchableOpacity>
+            <TextInput
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+              placeholder="email@example.com"
+              autoCapitalize="none"
+              keyboardType="email-address"
+            />
           </Box>
 
           <Box style={styles.inputWrapper}>
             <Typography variant="secondary" style={styles.label}>Password</Typography>
-            <TouchableOpacity style={styles.input} onPress={() => {}}>
-              <Typography variant="body">••••••••</Typography>
-            </TouchableOpacity>
+            <TextInput
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+              placeholder="••••••••"
+              secureTextEntry
+            />
           </Box>
 
           <Button
@@ -91,11 +116,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 48,
   },
-  logoPlaceholder: {
-    width: 80,
-    height: 80,
-    borderRadius: 20,
-    backgroundColor: SiriusTheme.colors.primary,
+  logoContainer: {
+    width: 120,
+    height: 120,
+    borderRadius: 30,
+    backgroundColor: '#0C1C3E',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
@@ -105,10 +130,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 8,
   },
-  logoText: {
-    color: '#fff',
-    fontSize: 20,
-    letterSpacing: 2,
+  logo: {
+    width: '70%',
+    height: '70%',
   },
   subtitle: {
     textAlign: 'center',
@@ -135,6 +159,7 @@ const styles = StyleSheet.create({
     padding: SiriusTheme.spacing.m,
     borderWidth: 1,
     borderColor: SiriusTheme.colors.disabled,
+    color: SiriusTheme.colors.textPrimary,
   },
   signInBtn: {
     marginTop: 16,

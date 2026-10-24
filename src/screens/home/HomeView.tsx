@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -15,6 +15,7 @@ import { SiriusTheme } from '../../constants/theme';
 import deviceRepository from '../../api/repositories/CompositeDeviceRepository';
 import SessionManager from '../../api/session/SessionManager';
 import { Home, SiriusDevice, Room } from '../../types/home';
+import LocalEsp32DeviceRepository from '../../api/repositories/LocalEsp32DeviceRepository';
 
 interface HomeViewProps {
   homeId: string;
@@ -44,17 +45,41 @@ const RoomSection = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [devices, setDevices] = useState<SiriusDevice[]>([]);
+  const localUpdatesRef = useRef<Map<string, SiriusDevice>>(new Map());
   const [isLoading, setIsLoading] = useState(false);
 
   const loadDevices = async () => {
-    if (!isExpanded) return;
-
     if (devices.length === 0) {
       setIsLoading(true);
     }
     try {
+      console.log(`[HomeView-Trace] loadDevices starting for room ${room.id}`);
       const data = await deviceRepository.getDevicesInRoom(homeId, room.id);
-      setDevices(data);
+      console.log(`[HomeView-Trace] loadDevices received ${data.length} devices:`,
+        data.map(d => `${d.factoryId}:${d.connectionStatus}`).join(', ')
+      );
+
+      console.log(`[HomeView-Trace] Setting devices. Current state in memory:`,
+        devices.map(d => `${d.factoryId}:${d.connectionStatus}`).join(', ')
+      );
+      console.log(`[HomeView-Trace] Setting devices. New data from cloud:`,
+        data.map(d => `${d.factoryId}:${d.connectionStatus}`).join(', ')
+      );
+      setDevices(data.map(cloudDev => {
+        const localLatest = localUpdatesRef.current.get(cloudDev.factoryId);
+        if (!localLatest) return cloudDev;
+        return {
+          ...cloudDev,
+          connectionStatus: localLatest.connectionStatus,
+          channels: localLatest.channels,
+          powerState: localLatest.powerState,
+          rssi: localLatest.rssi,
+          lastSeen: localLatest.lastSeen,
+          revision: localLatest.revision,
+          sessionId: localLatest.sessionId,
+          product: localLatest.product,
+        };
+      }));
     } catch (e) {
       console.error(e);
     } finally {
@@ -64,7 +89,27 @@ const RoomSection = ({
 
   useEffect(() => {
     loadDevices();
+    console.log(`[HomeView-Trace] RoomSection useEffect: loadDevices called for ${room.id}`);
   }, [isExpanded, refreshKey]);
+
+  useEffect(() => {
+    // Subscribe to device updates for devices in this room
+    const unsubscribe = LocalEsp32DeviceRepository.onDeviceUpdate((updatedDevice) => {
+      localUpdatesRef.current.set(updatedDevice.factoryId, updatedDevice);
+      setDevices(prevDevices => {
+        const exists = prevDevices.some(d => d.factoryId === updatedDevice.factoryId);
+        if (!exists) return prevDevices;
+
+        return prevDevices.map(device =>
+          device.factoryId === updatedDevice.factoryId ? updatedDevice : device
+        );
+      });
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   // Calculate Statistics
   const totalDevices = devices.length;
@@ -86,7 +131,7 @@ const RoomSection = ({
               <View style={styles.roomIcon}>
                 <Text style={{ fontSize: 18 }}>🏠</Text>
               </View>
-              <Typography variant="section">{room.name}</Typography>
+              <Typography variant="section" style={{ flex: 1 }}>{room.name}</Typography>
             </View>
             <View style={styles.roomStats}>
               <Typography variant="secondary">
@@ -155,9 +200,26 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomType, setNewRoomType] = useState('Living');
   const [refreshKey, setRefreshKey] = useState(0);
+  const [userName, setUserName] = useState<string>('User');
   const [isManageModalVisible, setIsManageModalVisible] = useState(false);
   const [selectedRoomForManage, setSelectedRoomForManage] = useState<Room | null>(null);
   const [manageRoomName, setManageRoomName] = useState('');
+
+  useEffect(() => {
+    const fetchUser = async () => {
+      try {
+        const session = await SessionManager.getSession();
+        if (session?.userName) {
+          setUserName(session.userName);
+        } else if (session?.activeUserId) {
+          setUserName('Sirius User');
+        }
+      } catch (e) {
+        console.error('Failed to fetch user display name', e);
+      }
+    };
+    fetchUser();
+  }, []);
 
 
   useEffect(() => {
@@ -170,7 +232,10 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
     }
     try {
       const session = await SessionManager.getSession();
-      const userId = session?.userId || 'user_legacy_v1';
+      const userId = session?.activeUserId;
+      if (!userId) {
+        throw new Error('No active user session found');
+      }
       const data = await deviceRepository.getHome(homeId, userId);
       setHome(data);
     } catch (e) {
@@ -237,11 +302,21 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
 
   const handleToggle = async (deviceId: string, channelId: string, state: 'on' | 'off') => {
     try {
-      await deviceRepository.setChannelState(deviceId, channelId, state);
-      await loadHome(true);
-      setRefreshKey(prev => prev + 1);
+      const result = await deviceRepository.setChannelState(deviceId, channelId, state);
+
+      if (result.status === 'accepted') {
+        await loadHome(true);
+        setRefreshKey(prev => prev + 1);
+      } else if (result.status === 'applied_unconfirmed') {
+        // Force refresh and notify user if necessary (though HomeView is higher level)
+        await loadHome(true);
+        setRefreshKey(prev => prev + 1);
+      } else if (result.status === 'rejected') {
+        Alert.alert('Control Error', result.reason || 'The device rejected the command.');
+      }
     } catch (e) {
       console.error(e);
+      Alert.alert('Network Error', 'Failed to communicate with the device.');
     }
   };
 
@@ -265,7 +340,7 @@ const HomeView = ({ homeId, onNavigateToRoom, onNavigateToDevice }: HomeViewProp
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
       <View style={styles.header}>
         <View>
-          <Typography variant="screenTitle">Hi Ammar</Typography>
+          <Typography variant="screenTitle">Hi {userName}</Typography>
           <Typography variant="secondary">Welcome to {home.name}</Typography>
         </View>
         <TouchableOpacity style={styles.notificationBtn}>

@@ -1,4 +1,5 @@
 import { SiriusDevice, Home, Room } from '../types/home';
+import { CommandResult } from '../types/device';
 
 export interface DeviceRepository {
   // Home Management
@@ -17,9 +18,9 @@ export interface DeviceRepository {
   removeDevice(deviceId: string): Promise<void>;
   renameDevice(deviceId: string, newName: string): Promise<void>;
   moveDevice(deviceId: string, newRoomId: string, newHomeId: string): Promise<void>;
-  getHomeStats(homeId: string, userId: string): Promise<{ totalDevices: number, activeDevices: number }>;
+  getHomeStats(homeId: string): Promise<{ totalDevices: number, activeDevices: number | null }>;
 
   // Control
-  setChannelState(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<{ success: boolean, newState: 'on' | 'off' }>;
+  setChannelState(deviceId: string, channelId: string, state: 'on' | 'off'): Promise<CommandResult>;
   getState(deviceId: string): Promise<SiriusDevice>;
 }

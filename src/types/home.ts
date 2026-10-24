@@ -1,4 +1,4 @@
-import { DeviceModel } from './device';
+import { DeviceModel, DeviceStateWire } from './device';
 
 export type SiriusProductCode = 'SIRIUS_SWITCH_1CH' | 'SIRIUS_SWITCH_2CH' | 'SIRIUS_SWITCH_3CH';
 
@@ -26,11 +26,17 @@ export interface SiriusDevice extends DeviceModel {
   rssi: number;
   connectionStatus: 'online' | 'offline' | 'connecting';
   firmwareVersion: string;
+  lastSeen: number | null;
   roomId: string;
   homeId: string;
   product: SiriusProduct;
   channels: DeviceChannel[];
   type: 'relay' | 'ac' | 'sensor' | 'generic';
+  // Realtime state
+  sessionId?: string; // Random ID generated at boot to track session
+  bootCount?: number; // Monotonic boot count from NVS
+  revision?: number;   // Monotonic counter incremented on every state change
+  enrollmentGeneration?: number; // Monotonic generation for re-enrollment safety
 }
 
 export interface Room {

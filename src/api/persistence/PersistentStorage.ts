@@ -32,15 +32,20 @@ interface DeviceData {
   rssi: number;
   connectionStatus: 'online' | 'offline' | 'connecting';
   firmwareVersion: string;
+  lastSeen: number | null;
   roomId: string;
   homeId: string;
   type: 'relay' | 'ac' | 'sensor' | 'generic';
   product: SiriusProduct;
   channels: DeviceChannel[];
+  sessionId?: string;
+  bootCount?: number;
+  revision?: number;
+  enrollmentGeneration?: number;
 }
 
 const STORAGE_KEY = '@sirius_app_state';
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 const LEGACY_LOCAL_USER_ID = 'user_legacy_v1';
 
 class PersistentStorage {
@@ -154,6 +159,18 @@ class PersistentStorage {
         });
       }
       state.schemaVersion = 3;
+    }
+
+    // Migration v3 -> v4: preserve authoritative device fences when available.
+    if (state.schemaVersion < 4) {
+      state.devices = (state.devices || []).map((device: any) => ({
+        ...device,
+        sessionId: device.sessionId,
+        bootCount: device.bootCount,
+        revision: device.revision,
+        enrollmentGeneration: device.enrollmentGeneration,
+      }));
+      state.schemaVersion = 4;
     }
 
     return state as AppState;

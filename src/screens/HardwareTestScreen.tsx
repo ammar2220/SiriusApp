@@ -13,7 +13,7 @@ import apiClient from '../api/local/apiClient';
 import { DeviceModel } from '../types/device';
 
 const HardwareTestScreen = () => {
-  const [ip, setIp] = useState('192.168.1.8');
+  const [ip, setIp] = useState('');
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<DeviceModel | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,9 +27,10 @@ const HardwareTestScreen = () => {
 
       setDevice({
         factoryId: info.id,
-        displayName: 'Sirius Prototype',
+        displayName: 'Test Device',
         ipAddress: ip,
-        powerState: state.power,
+        powerState: state.channels.some(ch => ch.state === 'on') ? 'on' :
+                    state.channels.every(ch => ch.state === 'off') ? 'off' : 'unknown',
         rssi: state.rssi,
         connectionStatus: 'online',
         firmwareVersion: info.ver,
@@ -49,7 +50,8 @@ const HardwareTestScreen = () => {
       await apiClient.setChannelState(device.ipAddress, 1, state);
       // Refresh state after control
       const newState = await apiClient.getState(device.ipAddress);
-      setDevice({ ...device, powerState: newState.power, rssi: newState.rssi });
+      setDevice({ ...device, powerState: newState.channels.some(ch => ch.state === 'on') ? 'on' :
+                  newState.channels.every(ch => ch.state === 'off') ? 'off' : 'unknown', rssi: newState.rssi });
     } catch (e: any) {
       Alert.alert('Error', `Failed to set power ${state}: ${e.message}`);
     } finally {
@@ -62,7 +64,8 @@ const HardwareTestScreen = () => {
     setLoading(true);
     try {
       const state = await apiClient.getState(device.ipAddress);
-      setDevice({ ...device, powerState: state.power, rssi: state.rssi });
+      setDevice({ ...device, powerState: state.channels.some(ch => ch.state === 'on') ? 'on' :
+                  state.channels.every(ch => ch.state === 'off') ? 'off' : 'unknown', rssi: state.rssi });
     } catch (e: any) {
       setError('Failed to refresh state');
     } finally {
@@ -80,7 +83,7 @@ const HardwareTestScreen = () => {
           style={styles.input}
           value={ip}
           onChangeText={setIp}
-          placeholder="e.g. 192.168.1.8"
+          placeholder="e.g. 192.168.1.100"
           keyboardType="numeric"
         />
         <TouchableOpacity

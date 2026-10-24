@@ -1,0 +1,16 @@
+project_id = "sirius-app"
+
+[functions.remote-command-publish]
+verify_jwt = true
+
+[functions.remote-command-ack]
+verify_jwt = false
+
+[functions.device-uplink]
+verify_jwt = false
+
+[functions.remote-command-status]
+verify_jwt = true
+
+[functions.activate-legacy-remote-device]
+verify_jwt = true
